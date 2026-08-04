@@ -1,7 +1,8 @@
 import { getSql } from "../../../lib/db";
 
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const MODEL = "meta-llama/llama-3.3-70b-instruct:free";
+// Swapped endpoint config from OpenRouter to Cerebras Cloud
+const CEREBRAS_URL = "https://cerebras.ai";
+const MODEL = "llama-3.3-70b"; // Cerebras free-tier optimized Llama model
 const CREATOR_NAME = "Pelumi";
 
 export async function POST(req) {
@@ -34,18 +35,19 @@ name naturally. Keep replies clear and concise unless asked for depth.`;
     { role: "user", content: message },
   ];
 
-  const res = await fetch(OPENROUTER_URL, {
+  // Hit the Cerebras API endpoint with your specific environment token
+  const res = await fetch(CEREBRAS_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      Authorization: `Bearer ${process.env.CEREBRAS_API_KEY}`,
     },
-    body: JSON.stringify({ model: MODEL, messages }),
+    body: JSON.stringify({ model: MODEL, messages, stream: false }),
   });
 
   const data = await res.json();
-  console.log("OPENROUTER STATUS:", res.status);
-  console.log("OPENROUTER RESPONSE:", JSON.stringify(data));
+  console.log("CEREBRAS STATUS:", res.status);
+  console.log("CEREBRAS RESPONSE:", JSON.stringify(data));
   const replyText = data?.choices?.[0]?.message?.content || "Sorry, I couldn't generate a reply.";
 
   await sql`
@@ -54,4 +56,4 @@ name naturally. Keep replies clear and concise unless asked for depth.`;
   `;
 
   return Response.json({ reply: replyText });
-      }
+  }
