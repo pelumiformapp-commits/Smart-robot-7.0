@@ -1,6 +1,7 @@
 import { getSql } from "../../../lib/db";
 
-const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const MODEL = "meta-llama/llama-3.3-70b-instruct:free";
 const CREATOR_NAME = "Pelumi";
 
 export async function POST(req) {
@@ -27,27 +28,25 @@ name naturally. Keep replies clear and concise unless asked for depth.`;
     VALUES (${visitorName || "Guest"}, ${sessionId}, 'user', ${message})
   `;
 
-  const contents = [
-    ...(history || []).map((m) => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }],
-    })),
-    { role: "user", parts: [{ text: message }] },
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...(history || []),
+    { role: "user", content: message },
   ];
 
-  const res = await fetch(`${GEMINI_URL}?key=${process.env.GEMINI_API_KEY}`, {
+  const res = await fetch(OPENROUTER_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents,
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-    }),
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+    },
+    body: JSON.stringify({ model: MODEL, messages }),
   });
 
   const data = await res.json();
-  const replyText =
-    data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("\n") ||
-    "Sorry, I couldn't generate a reply.";
+  console.log("OPENROUTER STATUS:", res.status);
+  console.log("OPENROUTER RESPONSE:", JSON.stringify(data));
+  const replyText = data?.choices?.[0]?.message?.content || "Sorry, I couldn't generate a reply.";
 
   await sql`
     INSERT INTO messages (visitor_name, session_id, role, content)
@@ -55,4 +54,4 @@ name naturally. Keep replies clear and concise unless asked for depth.`;
   `;
 
   return Response.json({ reply: replyText });
-    }
+      }
