@@ -1,5 +1,7 @@
+import { getSql } from "../../../lib/db";
+
 const CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions";
-const MODEL = "llama3.3-70b"; // <-- FIXED: was llama-3.3-70b
+const MODEL = "llama3.1-8b";
 const CREATOR_NAME = "Pelumi";
 
 export async function POST(req) {
@@ -38,21 +40,12 @@ name naturally. Keep replies clear and concise unless asked for depth.`;
       "Content-Type": "application/json",
       Authorization: `Bearer ${process.env.CEREBRAS_API_KEY}`,
     },
-    body: JSON.stringify({ 
-      model: MODEL, 
-      messages,
-      max_tokens: 1024
-    }),
+    body: JSON.stringify({ model: MODEL, messages }),
   });
 
   const data = await res.json();
   console.log("CEREBRAS STATUS:", res.status);
   console.log("CEREBRAS RESPONSE:", JSON.stringify(data));
-
-  if (!res.ok) {
-    return Response.json({ error: data.message || "Cerebras API error" }, { status: res.status });
-  }
-
   const replyText = data?.choices?.[0]?.message?.content || "Sorry, I couldn't generate a reply.";
 
   await sql`
@@ -61,4 +54,4 @@ name naturally. Keep replies clear and concise unless asked for depth.`;
   `;
 
   return Response.json({ reply: replyText });
-                                                }
+    }
