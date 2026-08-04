@@ -44,6 +44,8 @@ name naturally. Keep replies clear and concise unless asked for depth.`;
   });
 
   const data = await res.json();
+  console.log("GITHUB MODELS STATUS:", res.status);
+  console.log("GITHUB MODELS RESPONSE:", JSON.stringify(data));
   const replyText = data?.choices?.[0]?.message?.content || "Sorry, I couldn't generate a reply.";
 
   await sql`
@@ -52,4 +54,4 @@ name naturally. Keep replies clear and concise unless asked for depth.`;
   `;
 
   return Response.json({ reply: replyText });
-    }
+}
