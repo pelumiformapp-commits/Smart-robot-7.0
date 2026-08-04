@@ -1,7 +1,5 @@
-import { getSql } from "../../../lib/db";
-
 const CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions";
-const MODEL = "llama-3.3-70b"; // or "llama-3.1-8b" for faster/cheaper
+const MODEL = "llama3.3-70b"; // <-- FIXED: was llama-3.3-70b
 const CREATOR_NAME = "Pelumi";
 
 export async function POST(req) {
@@ -38,12 +36,12 @@ name naturally. Keep replies clear and concise unless asked for depth.`;
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.CEREBRAS_API_KEY}`, // <-- changed
+      Authorization: `Bearer ${process.env.CEREBRAS_API_KEY}`,
     },
     body: JSON.stringify({ 
       model: MODEL, 
       messages,
-      stream: false // cerebras supports streaming too
+      max_tokens: 1024
     }),
   });
 
@@ -52,7 +50,7 @@ name naturally. Keep replies clear and concise unless asked for depth.`;
   console.log("CEREBRAS RESPONSE:", JSON.stringify(data));
 
   if (!res.ok) {
-    return Response.json({ error: data.error?.message || "Cerebras API error" }, { status: res.status });
+    return Response.json({ error: data.message || "Cerebras API error" }, { status: res.status });
   }
 
   const replyText = data?.choices?.[0]?.message?.content || "Sorry, I couldn't generate a reply.";
@@ -63,4 +61,4 @@ name naturally. Keep replies clear and concise unless asked for depth.`;
   `;
 
   return Response.json({ reply: replyText });
-}
+                                                }
