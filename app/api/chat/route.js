@@ -1,10 +1,11 @@
-import { sql } from "../../../lib/db";
+import { getSql } from "../../../lib/db";
 
 const GITHUB_MODELS_URL = "https://models.github.ai/inference/chat/completions";
 const MODEL = "openai/gpt-4o-mini";
 const CREATOR_NAME = "Pelumi";
 
 export async function POST(req) {
+  const sql = getSql();
   const { message, history, visitorName, sessionId } = await req.json();
 
   if (!message || !message.trim()) {
@@ -51,4 +52,4 @@ name naturally. Keep replies clear and concise unless asked for depth.`;
   `;
 
   return Response.json({ reply: replyText });
-}
+    }
