@@ -1,7 +1,7 @@
 import { getSql } from "../../../lib/db";
 
-const CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions";
-const MODEL = "llama3.1-8b";
+const COHERE_URL = "https://api.cohere.com/v2/chat";
+const MODEL = "command-r-plus-08-2024";
 const CREATOR_NAME = "Pelumi";
 
 export async function POST(req) {
@@ -34,19 +34,19 @@ name naturally. Keep replies clear and concise unless asked for depth.`;
     { role: "user", content: message },
   ];
 
-  const res = await fetch(CEREBRAS_URL, {
+  const res = await fetch(COHERE_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.CEREBRAS_API_KEY}`,
+      Authorization: `Bearer ${process.env.COHERE_API_KEY}`,
     },
     body: JSON.stringify({ model: MODEL, messages }),
   });
 
   const data = await res.json();
-  console.log("CEREBRAS STATUS:", res.status);
-  console.log("CEREBRAS RESPONSE:", JSON.stringify(data));
-  const replyText = data?.choices?.[0]?.message?.content || "Sorry, I couldn't generate a reply.";
+  console.log("COHERE STATUS:", res.status);
+  console.log("COHERE RESPONSE:", JSON.stringify(data));
+  const replyText = data?.message?.content?.[0]?.text || "Sorry, I couldn't generate a reply.";
 
   await sql`
     INSERT INTO messages (visitor_name, session_id, role, content)
