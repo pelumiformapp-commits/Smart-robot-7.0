@@ -8,7 +8,7 @@ const CREATOR_NAME = "Pelumi";
 export async function POST(req) {
   const sql = getSql();
   
-  // Edge Case Fix: Safely parse JSON to avoid unhandled crashes on raw bad payloads
+  // Guard against malformed client-side payloads
   let body;
   try {
     body = await req.json();
@@ -28,11 +28,15 @@ export async function POST(req) {
     ? `You are Robert, a friendly, warm, slightly playful AI assistant. You are talking to Pelumi — a Computer Engineer student, and the person who built you. Greet that fact naturally sometimes, with genuine warmth, and always address them by name. Keep replies clear and concise unless asked for depth.`
     : `You are Robert, a friendly, warm, slightly playful AI assistant built by Pelumi, a Computer Engineer student. You are talking to ${visitorName || "a guest"}. Address them by name naturally. Keep replies clear and concise unless asked for depth.`;
 
-  // Log user message to database
-  await sql`
-    INSERT INTO messages (visitor_name, session_id, role, content)
-    VALUES (${visitorName || "Guest"}, ${sessionId}, 'user', ${message})
-  `;
+  // Log user message to the database
+  try {
+    await sql`
+      INSERT INTO messages (visitor_name, session_id, role, content)
+      VALUES (${visitorName || "Guest"}, ${sessionId}, 'user', ${message})
+    `;
+  } catch (dbError) {
+    console.error("Database Save User Message Error:", dbError);
+  }
 
   const messages = [
     { role: "system", content: systemPrompt },
@@ -41,7 +45,7 @@ export async function POST(req) {
   ];
 
   try {
-    // Hit the authentic Cerebras API endpoint
+    // Call the correct Cerebras API endpoint
     const res = await fetch(CEREBRAS_URL, {
       method: "POST",
       headers: {
@@ -53,10 +57,14 @@ export async function POST(req) {
 
     console.log("CEREBRAS STATUS:", res.status);
     
+    // FIX: Catch HTML error pages before trying to parse JSON
     if (!res.ok) {
       const errText = await res.text();
       console.error("Cerebras API Error Context:", errText);
-      throw new Error(`Cerebras responded with status ${res.status}`);
+      return Response.json(
+        { error: `Upstream service returned status ${res.status}` },
+        { status: 502 }
+      );
     }
 
     const data = await res.json();
@@ -64,20 +72,24 @@ export async function POST(req) {
     
     const replyText = data?.choices?.[0]?.message?.content || "Sorry, I couldn't generate a reply.";
 
-    // Log assistant message to database
-    await sql`
-      INSERT INTO messages (visitor_name, session_id, role, content)
-      VALUES (${visitorName || "Guest"}, ${sessionId}, 'assistant', ${replyText})
-    `;
+    // Log assistant response to the database
+    try {
+      await sql`
+        INSERT INTO messages (visitor_name, session_id, role, content)
+        VALUES (${visitorName || "Guest"}, ${sessionId}, 'assistant', ${replyText})
+      `;
+    } catch (dbError) {
+      console.error("Database Save Assistant Message Error:", dbError);
+    }
 
     return Response.json({ reply: replyText });
 
   } catch (error) {
     console.error("API ROUTE FAILURE:", error);
     return Response.json(
-      { error: " Robert ran into an upstream connection issue. Please try again." },
+      { error: "Robert ran into an upstream connection issue. Please try again." },
       { status: 502 }
     );
   }
-  }
-  
+      }
+      
