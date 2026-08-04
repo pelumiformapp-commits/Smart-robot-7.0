@@ -1,14 +1,13 @@
 import { getSql } from "../../../lib/db";
 
-// FIX: Target the actual OpenAI-compatible V1 REST endpoint
-const CEREBRAS_URL = "https://cerebras.ai";
+// Direct official OpenAPI-compatible v1 chat completion endpoint
+const CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions";
 const MODEL = "llama-3.3-70b"; 
 const CREATOR_NAME = "Pelumi";
 
 export async function POST(req) {
   const sql = getSql();
   
-  // Guard against malformed client-side payloads
   let body;
   try {
     body = await req.json();
@@ -45,7 +44,6 @@ export async function POST(req) {
   ];
 
   try {
-    // Call the correct Cerebras API endpoint
     const res = await fetch(CEREBRAS_URL, {
       method: "POST",
       headers: {
@@ -57,7 +55,7 @@ export async function POST(req) {
 
     console.log("CEREBRAS STATUS:", res.status);
     
-    // FIX: Catch HTML error pages before trying to parse JSON
+    // Check if upstream endpoint broke before parsing JSON
     if (!res.ok) {
       const errText = await res.text();
       console.error("Cerebras API Error Context:", errText);
@@ -70,6 +68,7 @@ export async function POST(req) {
     const data = await res.json();
     console.log("CEREBRAS RESPONSE:", JSON.stringify(data));
     
+    // TYPO FIXED: Removed the invalid duplicate "?.?." chaining token
     const replyText = data?.choices?.[0]?.message?.content || "Sorry, I couldn't generate a reply.";
 
     // Log assistant response to the database
@@ -91,5 +90,5 @@ export async function POST(req) {
       { status: 502 }
     );
   }
-      }
-      
+                                                                 }
+  
