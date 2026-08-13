@@ -11,6 +11,11 @@ function getSessionId() {
   return id;
 }
 
+function isWalkCommand(text) {
+  const t = text.toLowerCase();
+  return t.includes("walk") || t.includes("move") || t.includes("step forward");
+}
+
 export default function ChatPage() {
   const [visitorName, setVisitorName] = useState(null);
   const [nameInput, setNameInput] = useState("");
@@ -18,6 +23,7 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [talking, setTalking] = useState(false);
+  const [walking, setWalking] = useState(false);
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -36,9 +42,18 @@ export default function ChatPage() {
     setVisitorName(nameInput.trim());
   }
 
+  function triggerWalk() {
+    setWalking(true);
+    setTimeout(() => setWalking(false), 2200);
+  }
+
   async function sendMessage(e) {
     e.preventDefault();
     if (!input.trim()) return;
+
+    if (isWalkCommand(input)) {
+      triggerWalk();
+    }
 
     const userMsg = { role: "user", content: input };
     const newMessages = [...messages, userMsg];
@@ -79,10 +94,10 @@ export default function ChatPage() {
   return (
     <div style={styles.page}>
       <div style={styles.sidebar}>
-        <div className={`robot ${talking ? "talking" : "idle"}`}>
+        <div className={`robot ${talking ? "talking" : "idle"} ${walking ? "walking" : ""}`}>
           <svg viewBox="0 0 160 220" width="90" height="120">
-            <rect x="58" y="170" width="14" height="40" rx="4" fill="#3b4252" />
-            <rect x="88" y="170" width="14" height="40" rx="4" fill="#3b4252" />
+            <rect x="58" y="170" width="14" height="40" rx="4" fill="#3b4252" className="leg-left" />
+            <rect x="88" y="170" width="14" height="40" rx="4" fill="#3b4252" className="leg-right" />
             <rect x="40" y="90" width="80" height="85" rx="14" fill="#4c566a" />
             <rect x="55" y="105" width="50" height="30" rx="6" fill="#88c0d0" />
             <rect x="18" y="95" width="16" height="60" rx="8" fill="#3b4252" className="arm-left" />
@@ -113,22 +128,40 @@ export default function ChatPage() {
         </div>
 
         <form onSubmit={sendMessage} style={styles.inputRow}>
-          <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Type a message..." style={styles.input} />
+          <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Type a message... (try 'walk')" style={styles.input} />
           <button type="submit" style={styles.button} disabled={loading}>Send</button>
         </form>
       </div>
 
       <style jsx global>{`
         .arm-left, .arm-right { transform-origin: top center; }
+        .leg-left, .leg-right { transform-origin: top center; }
+
         .idle .arm-left { animation: sway 3s ease-in-out infinite; }
         .idle .arm-right { animation: sway 3s ease-in-out infinite reverse; }
+
         .talking { animation: bob 0.5s ease-in-out infinite; }
         .talking .mouth { animation: flicker 0.35s steps(2) infinite; }
         .talking .antenna-light { animation: glow 0.6s ease-in-out infinite; }
+
+        .walking { animation: shift 2.2s ease-in-out; }
+        .walking .leg-left { animation: stepLeft 0.4s ease-in-out infinite; }
+        .walking .leg-right { animation: stepRight 0.4s ease-in-out infinite; }
+        .walking .arm-left { animation: stepRight 0.4s ease-in-out infinite; }
+        .walking .arm-right { animation: stepLeft 0.4s ease-in-out infinite; }
+
         @keyframes sway { 0%, 100% { transform: rotate(0deg); } 50% { transform: rotate(4deg); } }
         @keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
         @keyframes flicker { 0%, 100% { width: 40px; } 50% { width: 20px; } }
         @keyframes glow { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+        @keyframes stepLeft { 0%, 100% { transform: rotate(-18deg); } 50% { transform: rotate(18deg); } }
+        @keyframes stepRight { 0%, 100% { transform: rotate(18deg); } 50% { transform: rotate(-18deg); } }
+        @keyframes shift {
+          0% { transform: translateX(0); }
+          50% { transform: translateX(20px); }
+          100% { transform: translateX(0); }
+        }
       `}</style>
     </div>
   );
