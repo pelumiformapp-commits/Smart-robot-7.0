@@ -8,3 +8,10 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS usage_limits (
+  session_id TEXT,
+  usage_date DATE,
+  count INTEGER DEFAULT 1,
+  PRIMARY KEY (session_id, usage_date)
+);
