@@ -1,5 +1,3 @@
-import pdfParse from "pdf-parse/lib/pdf-parse.js";
-
 export async function POST(req) {
   const { data, mimeType } = await req.json();
   if (!data || !mimeType) {
@@ -10,6 +8,7 @@ export async function POST(req) {
 
   try {
     if (mimeType === "application/pdf") {
+      const { default: pdfParse } = await import("pdf-parse/lib/pdf-parse.js");
       const parsed = await pdfParse(buffer);
       return Response.json({ text: parsed.text.slice(0, 12000) });
     }
