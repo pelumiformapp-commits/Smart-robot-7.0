@@ -74,9 +74,17 @@ export default function ChatPage() {
     });
     const data = await res.json();
 
-    setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+    setMessages((prev) => [
+      ...prev,
+      { role: "assistant", content: data.reply, image: data.generatedImage || null },
+    ]);
     setLoading(false);
     setTalking(false);
+
+    if (data.speechText && "speechSynthesis" in window) {
+      const utter = new SpeechSynthesisUtterance(data.speechText);
+      window.speechSynthesis.speak(utter);
+    }
   }
 
   if (!visitorName) {
@@ -121,6 +129,7 @@ export default function ChatPage() {
           {messages.map((m, i) => (
             <div key={i} style={{ ...styles.bubble, alignSelf: m.role === "user" ? "flex-end" : "flex-start", background: m.role === "user" ? "#5e81ac" : "#e5e9f0", color: m.role === "user" ? "#fff" : "#2e3440" }}>
               {m.content}
+              {m.image && <img src={m.image} alt="Generated" style={{ maxWidth: "100%", borderRadius: 8, marginTop: 6 }} />}
             </div>
           ))}
           {loading && <div style={{ ...styles.bubble, background: "#e5e9f0" }}>Robert is typing...</div>}
