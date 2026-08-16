@@ -34,6 +34,14 @@ function loadSettings() {
   };
 }
 
+function loadAppearance() {
+  if (typeof window === "undefined") return { theme: "dark", accent: "#5e81ac" };
+  return {
+    theme: localStorage.getItem("robert_theme") || "dark",
+    accent: localStorage.getItem("robert_accent_color") || "#5e81ac",
+  };
+}
+
 export default function ChatPage() {
   const [visitorName, setVisitorName] = useState(null);
   const [nameInput, setNameInput] = useState("");
@@ -42,11 +50,15 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [talking, setTalking] = useState(false);
   const [walking, setWalking] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [appearance, setAppearance] = useState({ theme: "dark", accent: "#5e81ac" });
   const bottomRef = useRef(null);
+  const recognitionRef = useRef(null);
 
   useEffect(() => {
     const saved = localStorage.getItem("robert_visitor_name");
     if (saved) setVisitorName(saved);
+    setAppearance(loadAppearance());
   }, []);
 
   useEffect(() => {
@@ -58,6 +70,13 @@ export default function ChatPage() {
     if (!nameInput.trim()) return;
     localStorage.setItem("robert_visitor_name", nameInput.trim());
     setVisitorName(nameInput.trim());
+
+    const hideGreeting = localStorage.getItem("robert_hide_greeting") === "true";
+    if (!hideGreeting) {
+      const template = localStorage.getItem("robert_welcome_message") || "Hi [Username]! I'm Robert. Ask me anything.";
+      const greeting = template.replace(/\[Username\]/g, nameInput.trim());
+      setMessages([{ role: "assistant", content: greeting }]);
+    }
   }
 
   function triggerWalk() {
@@ -71,6 +90,30 @@ export default function ChatPage() {
       reader.onload = () => resolve(reader.result.split(",")[1]);
       reader.onerror = reject;
       reader.readAsDataURL(file);
+    });
+  }
+
+  function compressImage(file, maxWidth = 800, quality = 0.7) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxWidth / img.width);
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(
+          (blob) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result.split(",")[1]);
+            reader.readAsDataURL(blob);
+          },
+          "image/jpeg",
+          quality
+        );
+      };
+      img.src = URL.createObjectURL(file);
     });
   }
 
@@ -145,7 +188,7 @@ export default function ChatPage() {
     const file = e.target.files[0];
     if (!file) return;
 
-    const base64 = await fileToBase64(file);
+    const base64 = await compressImage(file);
     const userMsg = { role: "user", content: `[Sent an image: ${file.name}]`, previewImage: URL.createObjectURL(file) };
     setMessages((prev) => [...prev, userMsg]);
     setLoading(true);
@@ -177,6 +220,42 @@ export default function ChatPage() {
     e.target.value = "";
   }
 
+  function toggleVoiceInput() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Voice input isn't supported on this browser.");
+      return;
+    }
+
+    if (listening) {
+      recognitionRef.current?.stop();
+      setListening(false);
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "en-US";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => setListening(true);
+    recognition.onend = () => setListening(false);
+    recognition.onerror = () => setListening(false);
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      setInput((prev) => (prev ? `${prev} ${transcript}` : transcript));
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+  }
+
+  function clearChat() {
+    if (confirm("Clear this conversation? This can't be undone.")) {
+      setMessages([]);
+    }
+  }
+
   if (!visitorName) {
     return (
       <div style={styles.center}>
@@ -189,9 +268,14 @@ export default function ChatPage() {
     );
   }
 
+  const isDark = appearance.theme !== "light";
+  const pageBg = isDark ? "#0b141a" : "#eceff4";
+  const bubbleAssistantBg = isDark ? "#202c33" : "#e5e9f0";
+  const bubbleAssistantColor = isDark ? "#e9edef" : "#2e3440";
+
   return (
-    <div style={styles.page}>
-      <div style={styles.sidebar}>
+    <div style={{ ...styles.page, background: pageBg }}>
+      <div style={{ ...styles.sidebar, background: isDark ? "#202c33" : "#3b4252" }}>
         <div className={`robot ${talking ? "talking" : "idle"} ${walking ? "walking" : ""}`}>
           <svg viewBox="0 0 160 220" width="90" height="120">
             <rect x="58" y="170" width="14" height="40" rx="4" fill="#3b4252" className="leg-left" />
@@ -201,24 +285,33 @@ export default function ChatPage() {
             <rect x="18" y="95" width="16" height="60" rx="8" fill="#3b4252" className="arm-left" />
             <rect x="126" y="95" width="16" height="60" rx="8" fill="#3b4252" className="arm-right" />
             <rect x="72" y="75" width="16" height="18" fill="#3b4252" />
-            <rect x="35" y="15" width="90" height="65" rx="20" fill="#5e81ac" />
+            <rect x="35" y="15" width="90" height="65" rx="20" fill={appearance.accent} />
             <circle cx="62" cy="45" r="8" fill="#eceff4" />
             <circle cx="98" cy="45" r="8" fill="#eceff4" />
             <circle cx="62" cy="45" r="3.5" fill="#2e3440" />
             <circle cx="98" cy="45" r="3.5" fill="#2e3440" />
             <rect x="60" y="62" width="40" height="6" rx="3" fill="#eceff4" className="mouth" />
-            <line x1="80" y1="15" x2="80" y2="2" stroke="#5e81ac" strokeWidth="3" />
+            <line x1="80" y1="15" x2="80" y2="2" stroke={appearance.accent} strokeWidth="3" />
             <circle cx="80" cy="2" r="4" fill="#a3be8c" className="antenna-light" />
           </svg>
         </div>
-        <span style={{ fontSize: 13 }}>Hi, {visitorName}</span>
+        <span style={{ fontSize: 13, color: "#eceff4" }}>Hi, {visitorName}</span>
+        <button type="button" onClick={clearChat} title="Clear chat" style={styles.headerIconBtn}>🗑️</button>
         <a href="/settings" style={styles.settingsLink}>⚙️</a>
       </div>
 
       <div style={styles.chatArea}>
         <div style={styles.messages}>
           {messages.map((m, i) => (
-            <div key={i} style={{ ...styles.bubble, alignSelf: m.role === "user" ? "flex-end" : "flex-start", background: m.role === "user" ? "#5e81ac" : "#e5e9f0", color: m.role === "user" ? "#fff" : "#2e3440" }}>
+            <div
+              key={i}
+              style={{
+                ...styles.bubble,
+                alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                background: m.role === "user" ? appearance.accent : bubbleAssistantBg,
+                color: m.role === "user" ? "#fff" : bubbleAssistantColor,
+              }}
+            >
               {m.role === "user" && m.previewImage && (
                 <img src={m.previewImage} alt="Uploaded" style={{ maxWidth: "100%", borderRadius: 8, marginBottom: 4 }} />
               )}
@@ -234,7 +327,7 @@ export default function ChatPage() {
               {m.image && <img src={m.image} alt="Generated" style={{ maxWidth: "100%", borderRadius: 8, marginTop: 6 }} />}
             </div>
           ))}
-          {loading && <div style={{ ...styles.bubble, background: "#e5e9f0" }}>Robert is typing...</div>}
+          {loading && <div style={{ ...styles.bubble, background: bubbleAssistantBg, color: bubbleAssistantColor }}>Robert is typing...</div>}
           <div ref={bottomRef} />
         </div>
 
@@ -243,8 +336,16 @@ export default function ChatPage() {
           <input type="file" id="imgUpload" accept="image/*" style={{ display: "none" }} onChange={handleImageUpload} />
           <button type="button" style={styles.iconBtn} onClick={() => document.getElementById("docUpload").click()}>📎</button>
           <button type="button" style={styles.iconBtn} onClick={() => document.getElementById("imgUpload").click()}>📷</button>
+          <button
+            type="button"
+            style={{ ...styles.iconBtn, background: listening ? "#d9534f" : "#fff", color: listening ? "#fff" : "#000" }}
+            onClick={toggleVoiceInput}
+            title="Voice input"
+          >
+            🎤
+          </button>
           <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Type a message... (try 'walk')" style={styles.input} />
-          <button type="submit" style={styles.button} disabled={loading}>Send</button>
+          <button type="submit" style={{ ...styles.button, background: appearance.accent }} disabled={loading}>Send</button>
         </form>
       </div>
 
@@ -293,14 +394,15 @@ export default function ChatPage() {
 
 const styles = {
   center: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", gap: 12, background: "#eceff4" },
-  page: { display: "flex", flexDirection: "column", height: "100vh", background: "#eceff4" },
-  sidebar: { background: "#3b4252", color: "#eceff4", display: "flex", alignItems: "center", gap: 8, padding: "6px 10px" },
-  settingsLink: { marginLeft: "auto", color: "#eceff4", textDecoration: "none", fontSize: 18 },
+  page: { display: "flex", flexDirection: "column", height: "100vh" },
+  sidebar: { color: "#eceff4", display: "flex", alignItems: "center", gap: 8, padding: "6px 10px" },
+  headerIconBtn: { marginLeft: "auto", background: "none", border: "none", color: "#eceff4", fontSize: 16, cursor: "pointer" },
+  settingsLink: { color: "#eceff4", textDecoration: "none", fontSize: 18 },
   chatArea: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },
   messages: { flex: 1, display: "flex", flexDirection: "column", gap: 6, padding: "8px", overflowY: "auto" },
   bubble: { maxWidth: "80%", padding: "6px 10px", borderRadius: 10, fontSize: 14, lineHeight: 1.35 },
   inputRow: { display: "flex", gap: 6, padding: "6px", borderTop: "1px solid #d8dee9" },
   input: { flex: 1, padding: "8px 10px", borderRadius: 8, border: "1px solid #d8dee9" },
-  button: { padding: "8px 14px", borderRadius: 8, border: "none", background: "#5e81ac", color: "#fff", fontWeight: 600, cursor: "pointer" },
+  button: { padding: "8px 14px", borderRadius: 8, border: "none", color: "#fff", fontWeight: 600, cursor: "pointer" },
   iconBtn: { padding: "8px 10px", borderRadius: 8, border: "1px solid #d8dee9", background: "#fff", cursor: "pointer", fontSize: 16 },
 };
