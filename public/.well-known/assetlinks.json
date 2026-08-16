@@ -1,10 +1,8 @@
-[
-  {
-    "relation": ["delegate_permission/common.handle_all_urls"],
-    "target": {
-      "namespace": "android_app",
-      "package_name": "com.pelumi.robert",
-      "sha256_cert_fingerprints": ["REPLACE_WITH_YOUR_APP_SHA256_FINGERPRINT"]
-    }
-  }
-]
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "app.vercel.smart_robot_7_0_wpjw.twa",
+        "sha256_cert_fingerprints": ["E1:09:B8:2D:7A:E5:3E:C4:50:83:ED:74:61:BB:4D:93:6E:3A:80:33:19:01:B6:74:C0:9C:DE:19:83:26:99:7A"]
+      }
+    }]
