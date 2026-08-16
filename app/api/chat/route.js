@@ -1,5 +1,5 @@
 import { getSql } from "../../../lib/db";
-import { buildSystemPrompt, getAIReply, cleanTextForSpeech, wantsImageGeneration, generateImageHF, CREATOR_NAME } from "../../../lib/ai";
+import { buildSystemPrompt, getAIReply, cleanTextForSpeech, wantsImageGeneration, generateImageHF, askVision, sanitizeReply, CREATOR_NAME } from "../../../lib/ai";
 
 const DAILY_LIMIT = 30;
 
@@ -17,9 +17,9 @@ async function checkDailyLimit(sql, sessionId) {
 
 export async function POST(req) {
   const sql = getSql();
-  const { message, history, visitorName, sessionId } = await req.json();
+  const { message, history, visitorName, sessionId, settings, image } = await req.json();
 
-  if (!message || !message.trim()) {
+  if ((!message || !message.trim()) && !image) {
     return Response.json({ error: "Message cannot be empty." }, { status: 400 });
   }
   if (!sessionId) {
@@ -37,8 +37,25 @@ export async function POST(req) {
 
   await sql`
     INSERT INTO messages (visitor_name, session_id, role, content)
-    VALUES (${visitorName || "Guest"}, ${sessionId}, 'user', ${message})
+    VALUES (${visitorName || "Guest"}, ${sessionId}, 'user', ${message || "[Sent an image]"})
   `;
+
+  // image understanding branch
+  if (image) {
+    try {
+      const visionReply = await askVision(image.data, image.mimeType, message);
+      const cleanReply = sanitizeReply(visionReply);
+
+      await sql`
+        INSERT INTO messages (visitor_name, session_id, role, content)
+        VALUES (${visitorName || "Guest"}, ${sessionId}, 'assistant', ${cleanReply})
+      `;
+      return Response.json({ reply: cleanReply, speechText: cleanTextForSpeech(cleanReply) });
+    } catch (err) {
+      console.log("Vision failed:", err.message);
+      return Response.json({ reply: "Sorry, I couldn't read that image just now." });
+    }
+  }
 
   // image generation branch
   if (wantsImageGeneration(message)) {
@@ -56,11 +73,10 @@ export async function POST(req) {
       });
     } catch (err) {
       console.log("Image gen failed:", err.message);
-      // fall through to normal chat reply if image gen fails
     }
   }
 
-  const systemPrompt = buildSystemPrompt({ visitorName, isCreator });
+  const systemPrompt = buildSystemPrompt({ visitorName, isCreator, settings });
   const messages = [
     { role: "system", content: systemPrompt },
     ...(history || []),
@@ -75,4 +91,4 @@ export async function POST(req) {
   `;
 
   return Response.json({ reply: replyText, speechText: cleanTextForSpeech(replyText) });
-      }
+}
