@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 
 function getSessionId() {
   let id = localStorage.getItem("robert_session_id");
@@ -14,6 +17,21 @@ function getSessionId() {
 function isWalkCommand(text) {
   const t = text.toLowerCase();
   return t.includes("walk") || t.includes("move") || t.includes("step forward");
+}
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem("robert_settings");
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return {
+    personality: "friendly",
+    learningMode: false,
+    mathMode: false,
+    smartSuggestions: false,
+    creativity: "medium",
+    memoryNotes: "",
+  };
 }
 
 export default function ChatPage() {
@@ -47,6 +65,15 @@ export default function ChatPage() {
     setTimeout(() => setWalking(false), 2200);
   }
 
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(",")[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
   async function sendMessage(e) {
     e.preventDefault();
     if (!input.trim()) return;
@@ -62,6 +89,8 @@ export default function ChatPage() {
     setLoading(true);
     setTalking(true);
 
+    const settings = loadSettings();
+
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -70,6 +99,7 @@ export default function ChatPage() {
         history: messages,
         visitorName,
         sessionId: getSessionId(),
+        settings,
       }),
     });
     const data = await res.json();
@@ -82,9 +112,69 @@ export default function ChatPage() {
     setTalking(false);
 
     if (data.speechText && "speechSynthesis" in window) {
-      const utter = new SpeechSynthesisUtterance(data.speechText);
-      window.speechSynthesis.speak(utter);
+      window.speechSynthesis.speak(new SpeechSynthesisUtterance(data.speechText));
     }
+  }
+
+  async function handleDocUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setLoading(true);
+    try {
+      const base64 = await fileToBase64(file);
+      const res = await fetch("/api/extract-document", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: base64, mimeType: file.type }),
+      });
+      const data = await res.json();
+      if (data.text) {
+        setInput((prev) => `${prev}\n\n[Document: ${file.name}]\n${data.text}`.trim());
+      } else {
+        alert(data.error || "Could not read that file.");
+      }
+    } catch (err) {
+      alert("Upload failed.");
+    } finally {
+      setLoading(false);
+      e.target.value = "";
+    }
+  }
+
+  async function handleImageUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const base64 = await fileToBase64(file);
+    const userMsg = { role: "user", content: `[Sent an image: ${file.name}]`, previewImage: URL.createObjectURL(file) };
+    setMessages((prev) => [...prev, userMsg]);
+    setLoading(true);
+    setTalking(true);
+
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: input || "What's in this image? If it's a problem, solve it step by step.",
+        history: messages,
+        visitorName,
+        sessionId: getSessionId(),
+        settings: loadSettings(),
+        image: { data: base64, mimeType: file.type },
+      }),
+    });
+    const data = await res.json();
+
+    setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+    setLoading(false);
+    setTalking(false);
+    setInput("");
+
+    if (data.speechText && "speechSynthesis" in window) {
+      window.speechSynthesis.speak(new SpeechSynthesisUtterance(data.speechText));
+    }
+
+    e.target.value = "";
   }
 
   if (!visitorName) {
@@ -122,13 +212,25 @@ export default function ChatPage() {
           </svg>
         </div>
         <span style={{ fontSize: 13 }}>Hi, {visitorName}</span>
+        <a href="/settings" style={styles.settingsLink}>⚙️</a>
       </div>
 
       <div style={styles.chatArea}>
         <div style={styles.messages}>
           {messages.map((m, i) => (
             <div key={i} style={{ ...styles.bubble, alignSelf: m.role === "user" ? "flex-end" : "flex-start", background: m.role === "user" ? "#5e81ac" : "#e5e9f0", color: m.role === "user" ? "#fff" : "#2e3440" }}>
-              {m.content}
+              {m.role === "user" && m.previewImage && (
+                <img src={m.previewImage} alt="Uploaded" style={{ maxWidth: "100%", borderRadius: 8, marginBottom: 4 }} />
+              )}
+              {m.role === "assistant" ? (
+                <div className="md-content">
+                  <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                    {m.content}
+                  </ReactMarkdown>
+                </div>
+              ) : (
+                m.content
+              )}
               {m.image && <img src={m.image} alt="Generated" style={{ maxWidth: "100%", borderRadius: 8, marginTop: 6 }} />}
             </div>
           ))}
@@ -137,6 +239,10 @@ export default function ChatPage() {
         </div>
 
         <form onSubmit={sendMessage} style={styles.inputRow}>
+          <input type="file" id="docUpload" accept=".pdf,.txt" style={{ display: "none" }} onChange={handleDocUpload} />
+          <input type="file" id="imgUpload" accept="image/*" style={{ display: "none" }} onChange={handleImageUpload} />
+          <button type="button" style={styles.iconBtn} onClick={() => document.getElementById("docUpload").click()}>📎</button>
+          <button type="button" style={styles.iconBtn} onClick={() => document.getElementById("imgUpload").click()}>📷</button>
           <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Type a message... (try 'walk')" style={styles.input} />
           <button type="submit" style={styles.button} disabled={loading}>Send</button>
         </form>
@@ -171,6 +277,15 @@ export default function ChatPage() {
           50% { transform: translateX(20px); }
           100% { transform: translateX(0); }
         }
+
+        .md-content p { margin: 0 0 8px; }
+        .md-content p:last-child { margin-bottom: 0; }
+        .md-content h2 { font-size: 15px; margin: 10px 0 6px; }
+        .md-content h3 { font-size: 14px; margin: 8px 0 4px; }
+        .md-content code { background: rgba(0,0,0,0.08); padding: 1px 4px; border-radius: 4px; font-size: 13px; }
+        .md-content pre { background: rgba(0,0,0,0.08); padding: 8px; border-radius: 6px; overflow-x: auto; }
+        .md-content ul, .md-content ol { margin: 4px 0; padding-left: 20px; }
+        .md-content .katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; }
       `}</style>
     </div>
   );
@@ -180,10 +295,12 @@ const styles = {
   center: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", gap: 12, background: "#eceff4" },
   page: { display: "flex", flexDirection: "column", height: "100vh", background: "#eceff4" },
   sidebar: { background: "#3b4252", color: "#eceff4", display: "flex", alignItems: "center", gap: 8, padding: "6px 10px" },
+  settingsLink: { marginLeft: "auto", color: "#eceff4", textDecoration: "none", fontSize: 18 },
   chatArea: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },
   messages: { flex: 1, display: "flex", flexDirection: "column", gap: 6, padding: "8px", overflowY: "auto" },
   bubble: { maxWidth: "80%", padding: "6px 10px", borderRadius: 10, fontSize: 14, lineHeight: 1.35 },
   inputRow: { display: "flex", gap: 6, padding: "6px", borderTop: "1px solid #d8dee9" },
   input: { flex: 1, padding: "8px 10px", borderRadius: 8, border: "1px solid #d8dee9" },
   button: { padding: "8px 14px", borderRadius: 8, border: "none", background: "#5e81ac", color: "#fff", fontWeight: 600, cursor: "pointer" },
+  iconBtn: { padding: "8px 10px", borderRadius: 8, border: "1px solid #d8dee9", background: "#fff", cursor: "pointer", fontSize: 16 },
 };
