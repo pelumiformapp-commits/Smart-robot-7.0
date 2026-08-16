@@ -7,6 +7,12 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at   TIMESTAMPTZ DEFAULT now()
 );
 
+  CREATE TABLE IF NOT EXISTS devices (
+  session_id   TEXT PRIMARY KEY,
+  onesignal_id TEXT NOT NULL,
+  updated_at   TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 
 CREATE TABLE IF NOT EXISTS usage_limits (
