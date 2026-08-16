@@ -42,9 +42,30 @@ function loadAppearance() {
   };
 }
 
+function loadVoiceSettings() {
+  try {
+    const raw = localStorage.getItem("robert_voice_settings");
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return { rate: 1, pitch: 1, voiceURI: "" };
+}
+
 function formatTime(iso) {
   if (!iso) return "";
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatFullDateTime(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleString([], {
+    weekday: "short",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function formatDateLabel(iso) {
@@ -80,6 +101,7 @@ export default function ChatPage() {
   const [visitorName, setVisitorName] = useState(null);
   const [nameInput, setNameInput] = useState("");
   const [messages, setMessages] = useState([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [talking, setTalking] = useState(false);
@@ -96,6 +118,11 @@ export default function ChatPage() {
   const [showQuickReplies, setShowQuickReplies] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [regeneratingId, setRegeneratingId] = useState(null);
+  const [detailFor, setDetailFor] = useState(null);
+  const [speaking, setSpeaking] = useState(false);
+  const [voiceSettings, setVoiceSettings] = useState({ rate: 1, pitch: 1, voiceURI: "" });
+  const [availableVoices, setAvailableVoices] = useState([]);
+  const [voicePanelOpen, setVoicePanelOpen] = useState(false);
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -107,12 +134,44 @@ export default function ChatPage() {
     if (!isNaN(savedFont) && savedFont >= 0 && savedFont < FONT_SIZES.length) setFontIndex(savedFont);
 
     setAutoTalk(localStorage.getItem("robert_autotalk") !== "false");
+    setVoiceSettings(loadVoiceSettings());
 
     try {
       setPins(JSON.parse(localStorage.getItem("robert_pins") || "{}"));
       setReactions(JSON.parse(localStorage.getItem("robert_reactions") || "{}"));
     } catch (e) {}
+
+    if ("speechSynthesis" in window) {
+      const populateVoices = () => setAvailableVoices(window.speechSynthesis.getVoices());
+      populateVoices();
+      window.speechSynthesis.onvoiceschanged = populateVoices;
+    }
   }, []);
+
+  // Load persisted chat history for this session once we know who's visiting
+  useEffect(() => {
+    if (!visitorName || historyLoaded) return;
+    try {
+      const key = "robert_messages_" + getSessionId();
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length) setMessages(parsed);
+      }
+    } catch (e) {}
+    setHistoryLoaded(true);
+  }, [visitorName, historyLoaded]);
+
+  // Persist chat history whenever messages change (after initial load)
+  useEffect(() => {
+    if (!visitorName || !historyLoaded) return;
+    try {
+      const key = "robert_messages_" + getSessionId();
+      // strip blob preview URLs — they don't survive reload anyway
+      const toStore = messages.map(({ previewImage, ...rest }) => rest);
+      localStorage.setItem(key, JSON.stringify(toStore));
+    } catch (e) {}
+  }, [messages, visitorName, historyLoaded]);
 
   useEffect(() => {
     if (!searchOpen) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -180,7 +239,30 @@ export default function ChatPage() {
   function speak(text) {
     if (!autoTalk || !text || !("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = voiceSettings.rate;
+    utterance.pitch = voiceSettings.pitch;
+    if (voiceSettings.voiceURI) {
+      const match = availableVoices.find((v) => v.voiceURI === voiceSettings.voiceURI);
+      if (match) utterance.voice = match;
+    }
+    utterance.onstart = () => setSpeaking(true);
+    utterance.onend = () => setSpeaking(false);
+    utterance.onerror = () => setSpeaking(false);
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function stopSpeaking() {
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    setSpeaking(false);
+  }
+
+  function updateVoiceSetting(patch) {
+    setVoiceSettings((prev) => {
+      const next = { ...prev, ...patch };
+      localStorage.setItem("robert_voice_settings", JSON.stringify(next));
+      return next;
+    });
   }
 
   function markDelivered(id) {
@@ -214,7 +296,6 @@ export default function ChatPage() {
 
     if (isWalkCommand(input)) triggerWalk();
 
-    // Editing an existing message: replace it, drop everything after it, re-fetch
     if (editingId) {
       const idx = messages.findIndex((m) => m.id === editingId);
       const updatedMsg = {
@@ -405,12 +486,15 @@ export default function ChatPage() {
     const next = !autoTalk;
     setAutoTalk(next);
     localStorage.setItem("robert_autotalk", next.toString());
-    if (!next && "speechSynthesis" in window) window.speechSynthesis.cancel();
+    if (!next) stopSpeaking();
   }
 
   function clearChat() {
     if (confirm("Clear this conversation? This can't be undone.")) {
       setMessages([]);
+      try {
+        localStorage.removeItem("robert_messages_" + getSessionId());
+      } catch (e) {}
     }
   }
 
@@ -496,6 +580,7 @@ export default function ChatPage() {
       return next;
     });
     if (editingId === id) cancelEdit();
+    if (detailFor === id) setDetailFor(null);
   }
 
   async function regenerate(assistantId) {
@@ -532,6 +617,7 @@ export default function ChatPage() {
     ? messages.filter((m) => m.content?.toLowerCase().includes(searchQuery.trim().toLowerCase()))
     : messages;
   const groupedMessages = groupWithDateSeparators(visibleMessages);
+  const detailMessage = detailFor ? messages.find((m) => m.id === detailFor) : null;
 
   if (!visitorName) {
     return (
@@ -579,12 +665,57 @@ export default function ChatPage() {
           <button type="button" onClick={() => changeFont(1)} title="Larger text" style={styles.headerIconBtn}>A+</button>
           <button type="button" onClick={toggleTheme} title="Toggle theme" style={styles.headerIconBtn}>{isDark ? "🌙" : "☀️"}</button>
           <button type="button" onClick={toggleAutoTalk} title="Auto-talk" style={{ ...styles.headerIconBtn, background: autoTalk ? appearance.accent : "transparent" }}>🔈</button>
+          {speaking && (
+            <button type="button" onClick={stopSpeaking} title="Stop speaking" style={{ ...styles.headerIconBtn, background: "#d9534f" }}>⏹️</button>
+          )}
+          <button type="button" onClick={() => setVoicePanelOpen((v) => !v)} title="Voice settings" style={styles.headerIconBtn}>🎚️</button>
           <button type="button" onClick={() => setSearchOpen((v) => !v)} title="Search" style={styles.headerIconBtn}>🔍</button>
           <button type="button" onClick={exportChat} title="Export chat" style={styles.headerIconBtn}>⬇️</button>
           <button type="button" onClick={clearChat} title="Clear chat" style={styles.headerIconBtn}>🗑️</button>
           <a href="/settings" style={styles.settingsLink}>⚙️</a>
         </div>
       </div>
+
+      {voicePanelOpen && (
+        <div style={{ ...styles.voicePanel, background: isDark ? "#202c33" : "#fff", color: bubbleAssistantColor }}>
+          <label style={styles.voicePanelLabel}>
+            Voice
+            <select
+              value={voiceSettings.voiceURI}
+              onChange={(e) => updateVoiceSetting({ voiceURI: e.target.value })}
+              style={styles.voiceSelect}
+            >
+              <option value="">Default</option>
+              {availableVoices.map((v) => (
+                <option key={v.voiceURI} value={v.voiceURI}>{v.name} ({v.lang})</option>
+              ))}
+            </select>
+          </label>
+          <label style={styles.voicePanelLabel}>
+            Speed: {voiceSettings.rate.toFixed(1)}x
+            <input
+              type="range" min="0.5" max="2" step="0.1"
+              value={voiceSettings.rate}
+              onChange={(e) => updateVoiceSetting({ rate: parseFloat(e.target.value) })}
+            />
+          </label>
+          <label style={styles.voicePanelLabel}>
+            Pitch: {voiceSettings.pitch.toFixed(1)}
+            <input
+              type="range" min="0" max="2" step="0.1"
+              value={voiceSettings.pitch}
+              onChange={(e) => updateVoiceSetting({ pitch: parseFloat(e.target.value) })}
+            />
+          </label>
+          <button
+            type="button"
+            style={{ ...styles.headerIconBtn, alignSelf: "flex-start", background: appearance.accent }}
+            onClick={() => speak("This is how I sound.")}
+          >
+            Test voice
+          </button>
+        </div>
+      )}
 
       {searchOpen && (
         <div style={{ ...styles.searchBar, background: isDark ? "#202c33" : "#fff" }}>
@@ -653,7 +784,7 @@ export default function ChatPage() {
                 <div style={{ ...styles.metaRow, justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
                   {m.edited && <span style={styles.editedTag}>edited</span>}
                   {m.regenerated && <span style={styles.editedTag}>regenerated</span>}
-                  <span style={styles.timeText}>{formatTime(m.time)}</span>
+                  <span style={styles.timeText} onClick={() => setDetailFor(m.id)} title="View details">{formatTime(m.time)}</span>
                   {m.role === "user" && (
                     <span style={styles.ticks}>
                       {m.status === "seen" ? "✓✓" : m.status === "delivered" ? "✓✓" : "✓"}
@@ -678,6 +809,7 @@ export default function ChatPage() {
                         <button type="button" style={styles.msgActionBtn} onClick={() => regenerate(m.id)} disabled={isRegenerating}>🔁</button>
                       )}
                       <button type="button" style={styles.msgActionBtn} onClick={() => deleteMessage(m.id)}>🗑️</button>
+                      <button type="button" style={styles.msgActionBtn} onClick={() => setDetailFor(m.id)}>ℹ️</button>
                     </>
                   )}
                 </div>
@@ -742,6 +874,24 @@ export default function ChatPage() {
         </form>
       </div>
 
+      {detailMessage && (
+        <div style={styles.modalOverlay} onClick={() => setDetailFor(null)}>
+          <div style={{ ...styles.modalCard, background: isDark ? "#202c33" : "#fff", color: bubbleAssistantColor }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>Message details</h3>
+            <p style={styles.detailRow}><strong>From:</strong> {detailMessage.role === "user" ? visitorName : "Robert"}</p>
+            <p style={styles.detailRow}><strong>Sent:</strong> {formatFullDateTime(detailMessage.time)}</p>
+            {detailMessage.role === "user" && (
+              <p style={styles.detailRow}>
+                <strong>Status:</strong> {detailMessage.status === "seen" ? "Seen ✓✓" : detailMessage.status === "delivered" ? "Delivered ✓✓" : "Sent ✓"}
+              </p>
+            )}
+            {detailMessage.edited && <p style={styles.detailRow}><em>This message was edited</em></p>}
+            {detailMessage.regenerated && <p style={styles.detailRow}><em>This response was regenerated</em></p>}
+            <button type="button" style={{ ...styles.button, background: appearance.accent, marginTop: 8 }} onClick={() => setDetailFor(null)}>Close</button>
+          </div>
+        </div>
+      )}
+
       <style jsx global>{`
         .arm-left, .arm-right { transform-origin: top center; }
         .leg-left, .leg-right { transform-origin: top center; }
@@ -783,6 +933,9 @@ const styles = {
   headerBtnRow: { marginLeft: "auto", display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" },
   headerIconBtn: { background: "rgba(255,255,255,0.1)", border: "none", color: "#eceff4", fontSize: 12, borderRadius: 6, padding: "4px 6px", cursor: "pointer" },
   settingsLink: { color: "#eceff4", textDecoration: "none", fontSize: 16 },
+  voicePanel: { display: "flex", flexDirection: "column", gap: 8, padding: "10px 14px", borderBottom: "1px solid #d8dee9" },
+  voicePanelLabel: { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600 },
+  voiceSelect: { padding: "4px 6px", borderRadius: 6, border: "1px solid #d8dee9" },
   searchBar: { display: "flex", gap: 6, padding: "6px 10px", borderBottom: "1px solid #d8dee9" },
   pinnedBar: { display: "flex", flexDirection: "column", gap: 4, padding: "6px 10px", borderBottom: "1px solid #d8dee9", maxHeight: 100, overflowY: "auto" },
   pinnedItem: { display: "flex", alignItems: "center", gap: 6, background: "rgba(0,0,0,0.05)", borderRadius: 8, padding: "4px 8px" },
@@ -791,7 +944,7 @@ const styles = {
   messages: { flex: 1, display: "flex", flexDirection: "column", gap: 6, padding: "8px", overflowY: "auto" },
   bubble: { maxWidth: "80%", padding: "6px 10px", borderRadius: 10, lineHeight: 1.35, position: "relative" },
   metaRow: { display: "flex", alignItems: "center", gap: 4, marginTop: 2, opacity: 0.7 },
-  timeText: { fontSize: 10 },
+  timeText: { fontSize: 10, cursor: "pointer" },
   ticks: { fontSize: 10 },
   editedTag: { fontSize: 10, fontStyle: "italic" },
   dateSeparator: { display: "flex", justifyContent: "center", margin: "10px 0" },
@@ -810,4 +963,7 @@ const styles = {
   input: { flex: 1, padding: "8px 10px", borderRadius: 8, border: "1px solid #d8dee9" },
   button: { padding: "8px 14px", borderRadius: 8, border: "none", color: "#fff", fontWeight: 600, cursor: "pointer" },
   iconBtn: { padding: "8px 10px", borderRadius: 8, border: "1px solid #d8dee9", background: "#fff", cursor: "pointer", fontSize: 16 },
+  modalOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 },
+  modalCard: { borderRadius: 12, padding: 20, width: "85%", maxWidth: 340, boxShadow: "0 8px 24px rgba(0,0,0,0.3)" },
+  detailRow: { fontSize: 13, margin: "6px 0" },
 };
