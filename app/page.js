@@ -93,7 +93,7 @@ export default function ChatPage() {
     });
   }
 
-  function compressImage(file, maxWidth = 800, quality = 0.7) {
+  function compressImage(file, maxWidth = 1400, useJpeg = false, quality = 0.9) {
     return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
@@ -102,21 +102,24 @@ export default function ChatPage() {
         canvas.width = img.width * scale;
         canvas.height = img.height * scale;
         const ctx = canvas.getContext("2d");
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        const format = useJpeg ? "image/jpeg" : "image/png";
         canvas.toBlob(
           (blob) => {
             const reader = new FileReader();
-            reader.onload = () => resolve(reader.result.split(",")[1]);
+            reader.onload = () => resolve({ base64: reader.result.split(",")[1], mimeType: format });
             reader.readAsDataURL(blob);
           },
-          "image/jpeg",
-          quality
+          format,
+          useJpeg ? quality : undefined
         );
       };
       img.src = URL.createObjectURL(file);
     });
   }
-
   async function sendMessage(e) {
     e.preventDefault();
     if (!input.trim()) return;
@@ -164,7 +167,7 @@ export default function ChatPage() {
     if (!file) return;
     setLoading(true);
     try {
-      const base64 = await fileToBase64(file);
+      const { base64, mimeType } = await compressImage(file);
       const res = await fetch("/api/extract-document", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -203,7 +206,7 @@ export default function ChatPage() {
         visitorName,
         sessionId: getSessionId(),
         settings: loadSettings(),
-        image: { data: base64, mimeType: file.type },
+        image: { data: base64, mimeType },
       }),
     });
     const data = await res.json();
