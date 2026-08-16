@@ -1,6 +1,6 @@
 import { getSql } from "../../../lib/db";
 import { buildSystemPrompt, getAIReply, cleanTextForSpeech, wantsImageGeneration, generateImageGemini, askVision, sanitizeReply } from "../../../lib/ai";
-import { detectCalculation, runCalculation, detectSummarize, detectTranslate } from "../../../lib/tools";
+import { detectCalculation, runCalculation, detectSummarize, detectTranslate, extractFacts, mergeFacts } from "../../../lib/tools";
 
 export const maxDuration = 60;
 
@@ -29,6 +29,32 @@ async function safeInsertMessage(sql, visitorName, sessionId, role, content) {
   }
 }
 
+// Tracks last-active + accumulates lightweight facts per visitor name, so Robert
+// recognizes the same person across different apps/browsers (name-based, not a
+// secure identity — fine for a personal assistant, not for anything sensitive).
+async function updateVisitorProfile(sql, visitorName, latestMessage) {
+  const visitorKey = (visitorName || "").trim().toLowerCase();
+  if (!visitorKey || visitorKey === "guest") return "";
+
+  try {
+    const rows = await sql`SELECT facts FROM user_profiles WHERE visitor_key = ${visitorKey}`;
+    const existingFacts = rows[0]?.facts || "";
+    const newFacts = extractFacts(latestMessage || "");
+    const mergedFacts = mergeFacts(existingFacts, newFacts);
+
+    await sql`
+      INSERT INTO user_profiles (visitor_key, display_name, facts, last_active)
+      VALUES (${visitorKey}, ${visitorName.trim()}, ${mergedFacts}, now())
+      ON CONFLICT (visitor_key)
+      DO UPDATE SET display_name = ${visitorName.trim()}, facts = ${mergedFacts}, last_active = now()
+    `;
+    return mergedFacts;
+  } catch (err) {
+    console.log("Profile update failed (non-fatal):", err.message);
+    return "";
+  }
+}
+
 export async function POST(req) {
   let body;
   try {
@@ -48,8 +74,6 @@ export async function POST(req) {
 
   const sql = getSql();
 
-  // SECURITY: creator status is verified against the admin password only.
-  // Typing "Pelumi" (or any name) as the visitor name NEVER grants creator status.
   const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
   const isCreator = !!ADMIN_PASSWORD && !!adminPassword && adminPassword === ADMIN_PASSWORD;
 
@@ -65,6 +89,7 @@ export async function POST(req) {
   }
 
   await safeInsertMessage(sql, visitorName, sessionId, "user", message || "[Sent an image]");
+  const knownFacts = await updateVisitorProfile(sql, visitorName, message);
 
   // ---- image understanding branch ----
   if (image) {
@@ -75,7 +100,7 @@ export async function POST(req) {
       return Response.json({ reply: cleanReply, speechText: cleanTextForSpeech(cleanReply) });
     } catch (err) {
       console.log("Vision failed:", err.message);
-      const fallback = "Sorry, I couldn't read that image just now — try a smaller or clearer photo.";
+      const fallback = "Sorry, I couldn't read that image just now — try a clearer or better-lit photo.";
       await safeInsertMessage(sql, visitorName, sessionId, "assistant", fallback);
       return Response.json({ reply: fallback });
     }
@@ -133,7 +158,7 @@ export async function POST(req) {
   if (isConfirmingImage) {
     try {
       const solvePrompt = `Solve this fully now, step by step, ending with a clear "Answer:" line: ${lastAssistantMsg.content}`;
-      const systemPromptConfirm = buildSystemPrompt({ visitorName, isCreator, settings });
+      const systemPromptConfirm = buildSystemPrompt({ visitorName, isCreator, settings, knownFacts });
       const solvedReply = await getAIReply([
         { role: "system", content: systemPromptConfirm },
         { role: "user", content: solvePrompt },
@@ -163,7 +188,7 @@ export async function POST(req) {
 
   // ---- normal chat ----
   try {
-    const systemPrompt = buildSystemPrompt({ visitorName, isCreator, settings });
+    const systemPrompt = buildSystemPrompt({ visitorName, isCreator, settings, knownFacts });
     const messages = [
       { role: "system", content: systemPrompt },
       ...(history || []),
