@@ -1,5 +1,5 @@
 import { getSql } from "../../../lib/db";
-import { buildSystemPrompt, getAIReply, cleanTextForSpeech, wantsImageGeneration, generateImageGemini, askVision, sanitizeReply, CREATOR_NAME } from "../../../lib/ai";
+import { buildSystemPrompt, getAIReply, cleanTextForSpeech, wantsImageGeneration, generateImageGemini, askVision, sanitizeReply } from "../../../lib/ai";
 import { detectCalculation, runCalculation, detectSummarize, detectTranslate } from "../../../lib/tools";
 
 export const maxDuration = 60;
@@ -19,7 +19,6 @@ async function checkDailyLimit(sql, sessionId) {
 }
 
 async function safeInsertMessage(sql, visitorName, sessionId, role, content) {
-  // Never let a logging failure break the chat itself.
   try {
     await sql`
       INSERT INTO messages (visitor_name, session_id, role, content)
@@ -38,7 +37,7 @@ export async function POST(req) {
     return Response.json({ reply: "That message didn't come through right — please try again." }, { status: 400 });
   }
 
-  const { message, history, visitorName, sessionId, settings, image } = body || {};
+  const { message, history, visitorName, sessionId, settings, image, adminPassword } = body || {};
 
   if ((!message || !message.trim()) && !image) {
     return Response.json({ error: "Message cannot be empty." }, { status: 400 });
@@ -48,7 +47,11 @@ export async function POST(req) {
   }
 
   const sql = getSql();
-  const isCreator = visitorName?.trim().toLowerCase() === CREATOR_NAME.toLowerCase();
+
+  // SECURITY: creator status is verified against the admin password only.
+  // Typing "Pelumi" (or any name) as the visitor name NEVER grants creator status.
+  const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+  const isCreator = !!ADMIN_PASSWORD && !!adminPassword && adminPassword === ADMIN_PASSWORD;
 
   try {
     if (!isCreator) {
@@ -58,7 +61,6 @@ export async function POST(req) {
       }
     }
   } catch (err) {
-    // If the limit check itself fails (DB hiccup), fail open rather than blocking chat.
     console.log("Usage limit check failed (failing open):", err.message);
   }
 
@@ -73,7 +75,7 @@ export async function POST(req) {
       return Response.json({ reply: cleanReply, speechText: cleanTextForSpeech(cleanReply) });
     } catch (err) {
       console.log("Vision failed:", err.message);
-      const fallback = "Sorry, I couldn't read that image just now.";
+      const fallback = "Sorry, I couldn't read that image just now — try a smaller or clearer photo.";
       await safeInsertMessage(sql, visitorName, sessionId, "assistant", fallback);
       return Response.json({ reply: fallback });
     }
@@ -90,7 +92,6 @@ export async function POST(req) {
       await safeInsertMessage(sql, visitorName, sessionId, "assistant", replyText);
       return Response.json({ reply: replyText, speechText: `That equals ${result}` });
     }
-    // fall through to AI if mathjs couldn't evaluate it (lets the AI handle word problems etc.)
   }
 
   // ---- smart tools: summarize ----
@@ -157,7 +158,6 @@ export async function POST(req) {
       });
     } catch (err) {
       console.log("Image gen failed:", err.message);
-      // fall through to normal chat reply below
     }
   }
 
