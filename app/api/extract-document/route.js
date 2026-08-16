@@ -22,4 +22,4 @@ export async function POST(req) {
     console.log("Document extraction failed:", err.message);
     return Response.json({ error: "Could not read that file." }, { status: 500 });
   }
-  }
+}
