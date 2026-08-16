@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 
 const DEFAULT_WELCOME = "Hi [Username]! I'm Robert. Ask me anything.";
+const LANGUAGES = ["English", "Spanish", "French", "German", "Portuguese", "Chinese", "Japanese", "Korean", "Hindi", "Arabic", "Yoruba", "Igbo", "Hausa"];
+const FONT_SIZES = [13, 14, 15, 16, 18];
 
 function safeGet(key, fallback = null) {
   if (typeof window === "undefined") return fallback;
@@ -20,6 +22,15 @@ function safeRemove(key) {
   try { localStorage.removeItem(key); } catch (e) {}
 }
 
+function getSessionId() {
+  let id = safeGet("robert_session_id");
+  if (!id) {
+    id = Math.random().toString(36).slice(2) + Date.now();
+    safeSet("robert_session_id", id);
+  }
+  return id;
+}
+
 export default function SettingsPage() {
   const [welcome, setWelcome] = useState(DEFAULT_WELCOME);
   const [hideGreeting, setHideGreeting] = useState(false);
@@ -29,7 +40,24 @@ export default function SettingsPage() {
   const [learningMode, setLearningMode] = useState(false);
   const [mathMode, setMathMode] = useState(false);
   const [smartSuggestions, setSmartSuggestions] = useState(false);
+  const [preferredLanguage, setPreferredLanguage] = useState("English");
   const [toast, setToast] = useState("");
+
+  // Voice & Speech
+  const [voiceURI, setVoiceURI] = useState("");
+  const [rate, setRate] = useState(1);
+  const [pitch, setPitch] = useState(1);
+  const [autoTalkDefault, setAutoTalkDefault] = useState(true);
+  const [availableVoices, setAvailableVoices] = useState([]);
+
+  // Appearance
+  const [theme, setTheme] = useState("dark");
+  const [accent, setAccent] = useState("#5e81ac");
+  const [fontIndex, setFontIndex] = useState(1);
+
+  // Alarms & Notifications
+  const [pushStatus, setPushStatus] = useState("unknown"); // unknown | registering | enabled | unsupported | failed
+  const [pushMessage, setPushMessage] = useState("");
 
   const [adminPassword, setAdminPassword] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
@@ -45,6 +73,32 @@ export default function SettingsPage() {
     setLearningMode(safeGet("robert_learning_mode") === "true");
     setMathMode(safeGet("robert_math_mode") === "true");
     setSmartSuggestions(safeGet("robert_smart_suggestions") === "true");
+    setPreferredLanguage(safeGet("robert_preferred_language", "English"));
+
+    try {
+      const rawVoice = safeGet("robert_voice_settings");
+      if (rawVoice) {
+        const v = JSON.parse(rawVoice);
+        setVoiceURI(v.voiceURI || "");
+        setRate(typeof v.rate === "number" ? v.rate : 1);
+        setPitch(typeof v.pitch === "number" ? v.pitch : 1);
+      }
+    } catch (e) {}
+    setAutoTalkDefault(safeGet("robert_autotalk") !== "false");
+
+    setTheme(safeGet("robert_theme", "dark"));
+    setAccent(safeGet("robert_accent_color", "#5e81ac"));
+    const savedFont = parseInt(safeGet("robert_font_index", "1"), 10);
+    if (!isNaN(savedFont) && savedFont >= 0 && savedFont < FONT_SIZES.length) setFontIndex(savedFont);
+
+    setPushStatus(safeGet("robert_push_registered") === "true" ? "enabled" : "unknown");
+
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      const populateVoices = () => setAvailableVoices(window.speechSynthesis.getVoices());
+      populateVoices();
+      window.speechSynthesis.onvoiceschanged = populateVoices;
+    }
+
     try {
       setIsAdmin(!!sessionStorage.getItem("robert_admin_pw"));
     } catch (e) {}
@@ -63,8 +117,92 @@ export default function SettingsPage() {
       smartSuggestions: next.smartSuggestions ?? smartSuggestions,
       creativity: next.creativity ?? creativity,
       memoryNotes: next.memoryNotes ?? memoryNotes,
+      preferredLanguage: next.preferredLanguage ?? preferredLanguage,
     };
     safeSet("robert_settings", JSON.stringify(merged));
+  }
+
+  function saveVoiceSettings(patch = {}) {
+    const merged = {
+      voiceURI: patch.voiceURI ?? voiceURI,
+      rate: patch.rate ?? rate,
+      pitch: patch.pitch ?? pitch,
+    };
+    safeSet("robert_voice_settings", JSON.stringify(merged));
+  }
+
+  function testVoice() {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      alert("Voice isn't supported in this browser.");
+      return;
+    }
+    window.speechSynthesis.resume();
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance("Hi, I'm Robert. This is how I sound.");
+    utterance.rate = rate;
+    utterance.pitch = pitch;
+    if (voiceURI) {
+      const match = availableVoices.find((v) => v.voiceURI === voiceURI);
+      if (match) utterance.voice = match;
+    }
+    window.speechSynthesis.speak(utterance);
+  }
+
+  async function enableAlarmNotifications() {
+    setPushStatus("registering");
+    setPushMessage("");
+    try {
+      const MedianBridge = typeof window !== "undefined" ? (window.Median || window.median) : null;
+      if (!MedianBridge?.oneSignal?.getOneSignalId) {
+        setPushStatus("unsupported");
+        setPushMessage("This only works inside the Robert Android/iOS app (Median build), not a regular browser.");
+        return;
+      }
+      const result = await MedianBridge.oneSignal.getOneSignalId();
+      const oneSignalId = result?.oneSignalId || result?.oneSignalUserId;
+      if (!oneSignalId) {
+        setPushStatus("failed");
+        setPushMessage("Couldn't get a device ID. Make sure notifications are allowed for this app in your phone settings.");
+        return;
+      }
+      const res = await fetch("/api/register-device", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: getSessionId(), oneSignalId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        safeSet("robert_push_registered", "true");
+        setPushStatus("enabled");
+        setPushMessage("Alarm and reminder notifications are now enabled on this device.");
+      } else {
+        setPushStatus("failed");
+        setPushMessage(data.error || "Registration failed. Please try again.");
+      }
+    } catch (err) {
+      setPushStatus("failed");
+      setPushMessage("Something went wrong enabling notifications.");
+    }
+  }
+
+  async function deleteAllChatData() {
+    if (!confirm("Delete ALL your chat history from Robert's memory? This can't be undone.")) return;
+    try {
+      const res = await fetch("/api/messages", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: getSessionId() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        safeRemove("robert_messages_" + getSessionId());
+        showSaved("Chat history deleted");
+      } else {
+        alert(data.error || "Couldn't delete chat history.");
+      }
+    } catch (err) {
+      alert("Couldn't delete chat history. Check your connection.");
+    }
   }
 
   async function handleAdminLogin() {
@@ -128,6 +266,120 @@ export default function SettingsPage() {
         </section>
 
         <section style={styles.section}>
+          <h2 style={styles.h2}>🎤 Voice & Speech</h2>
+          <div style={styles.field}>
+            <label style={styles.label}>Voice</label>
+            <select
+              style={styles.input}
+              value={voiceURI}
+              onChange={(e) => { setVoiceURI(e.target.value); saveVoiceSettings({ voiceURI: e.target.value }); showSaved(); }}
+            >
+              <option value="">Default</option>
+              {availableVoices.map((v) => (
+                <option key={v.voiceURI} value={v.voiceURI}>{v.name} ({v.lang})</option>
+              ))}
+            </select>
+          </div>
+          <div style={styles.field}>
+            <label style={styles.label}>Speed: {rate.toFixed(1)}x</label>
+            <input
+              type="range" min="0.5" max="2" step="0.1" style={{ width: "100%" }}
+              value={rate}
+              onChange={(e) => { const v = parseFloat(e.target.value); setRate(v); saveVoiceSettings({ rate: v }); }}
+              onMouseUp={() => showSaved()}
+              onTouchEnd={() => showSaved()}
+            />
+          </div>
+          <div style={styles.field}>
+            <label style={styles.label}>Pitch: {pitch.toFixed(1)}</label>
+            <input
+              type="range" min="0" max="2" step="0.1" style={{ width: "100%" }}
+              value={pitch}
+              onChange={(e) => { const v = parseFloat(e.target.value); setPitch(v); saveVoiceSettings({ pitch: v }); }}
+              onMouseUp={() => showSaved()}
+              onTouchEnd={() => showSaved()}
+            />
+          </div>
+          <Row label="Robert speaks replies aloud" sub="Default for new chats (can still be toggled per-chat)">
+            <Switch checked={autoTalkDefault} onChange={(v) => { setAutoTalkDefault(v); safeSet("robert_autotalk", v.toString()); showSaved(); }} />
+          </Row>
+          <button style={styles.primaryBtn} onClick={testVoice}>🔊 Test voice</button>
+        </section>
+
+        <section style={styles.section}>
+          <h2 style={styles.h2}>🎨 Appearance</h2>
+          <Row label="Dark mode" sub="Switch between light and dark theme">
+            <Switch checked={theme === "dark"} onChange={(v) => { const next = v ? "dark" : "light"; setTheme(next); safeSet("robert_theme", next); showSaved(); }} />
+          </Row>
+          <div style={{ ...styles.field, marginTop: 14 }}>
+            <label style={styles.label}>Accent color</label>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {["#5e81ac", "#00a884", "#d9534f", "#a3be8c", "#b48ead", "#ebcb8b"].map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => { setAccent(c); safeSet("robert_accent_color", c); showSaved(); }}
+                  style={{
+                    width: 32, height: 32, borderRadius: "50%", background: c, cursor: "pointer",
+                    border: accent === c ? "3px solid #fff" : "1px solid #2a3942",
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+          <div style={{ ...styles.field, marginTop: 14 }}>
+            <label style={styles.label}>Default text size</label>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button
+                type="button"
+                style={styles.smallBtn}
+                onClick={() => { const next = Math.max(0, fontIndex - 1); setFontIndex(next); safeSet("robert_font_index", next.toString()); showSaved(); }}
+              >
+                A−
+              </button>
+              <span style={{ fontSize: FONT_SIZES[fontIndex] }}>Sample text</span>
+              <button
+                type="button"
+                style={styles.smallBtn}
+                onClick={() => { const next = Math.min(FONT_SIZES.length - 1, fontIndex + 1); setFontIndex(next); safeSet("robert_font_index", next.toString()); showSaved(); }}
+              >
+                A+
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section style={styles.section}>
+          <h2 style={styles.h2}>🌐 Language</h2>
+          <p style={styles.hint}>Robert will reply in this language by default, unless you write to him in another one.</p>
+          <select
+            style={styles.input}
+            value={preferredLanguage}
+            onChange={(e) => { setPreferredLanguage(e.target.value); safeSet("robert_preferred_language", e.target.value); saveSettings({ preferredLanguage: e.target.value }); showSaved(); }}
+          >
+            {LANGUAGES.map((l) => (
+              <option key={l} value={l}>{l}</option>
+            ))}
+          </select>
+        </section>
+
+        <section style={styles.section}>
+          <h2 style={styles.h2}>⏰ Alarms & Notifications</h2>
+          <p style={styles.hint}>
+            Real alarm and reminder notifications (the ones that work even when the app is closed) need this device
+            registered for push notifications. This only works inside the Robert app installed on your phone — not in a
+            regular browser tab.
+          </p>
+          {pushStatus === "enabled" && <p style={styles.pill}>✅ Notifications enabled on this device</p>}
+          {pushStatus !== "enabled" && (
+            <button style={styles.primaryBtn} onClick={enableAlarmNotifications} disabled={pushStatus === "registering"}>
+              {pushStatus === "registering" ? "Enabling..." : "Enable Alarm Notifications"}
+            </button>
+          )}
+          {pushMessage && <p style={{ fontSize: 12, color: pushStatus === "failed" || pushStatus === "unsupported" ? "#d9534f" : "#8696a0", marginTop: 8 }}>{pushMessage}</p>}
+        </section>
+
+        <section style={styles.section}>
           <h2 style={styles.h2}>💾 AI Memory</h2>
           <div style={styles.field}>
             <label style={styles.label}>Things Robert should remember</label>
@@ -139,20 +391,6 @@ export default function SettingsPage() {
               onBlur={() => { safeSet("robert_memory_notes", memoryNotes); saveSettings({ memoryNotes }); showSaved(); }}
             />
           </div>
-          <button
-            style={styles.dangerBtn}
-            onClick={() => {
-              if (confirm("Forget everything Robert knows about you? This can't be undone.")) {
-                safeRemove("robert_memory_notes");
-                safeRemove("robert_chat_history");
-                setMemoryNotes("");
-                saveSettings({ memoryNotes: "" });
-                showSaved("Memory cleared");
-              }
-            }}
-          >
-            Forget everything Robert knows about me
-          </button>
         </section>
 
         <section style={styles.section}>
@@ -197,6 +435,25 @@ export default function SettingsPage() {
           <Row label="Enable Smart Suggestions" sub='Adds "you might also ask" under replies'>
             <Switch checked={smartSuggestions} onChange={(v) => { setSmartSuggestions(v); safeSet("robert_smart_suggestions", v.toString()); saveSettings({ smartSuggestions: v }); showSaved(); }} />
           </Row>
+        </section>
+
+        <section style={styles.section}>
+          <h2 style={styles.h2}>🗑️ Data & Privacy</h2>
+          <p style={styles.hint}>Removes your chat history from Robert's memory on the server. To-dos, notes, and reminders are kept separately.</p>
+          <button style={styles.dangerBtn} onClick={deleteAllChatData}>Delete all chat history</button>
+          <button
+            style={{ ...styles.dangerBtn, marginTop: 8 }}
+            onClick={() => {
+              if (confirm("Forget everything Robert knows about you? This can't be undone.")) {
+                safeRemove("robert_memory_notes");
+                setMemoryNotes("");
+                saveSettings({ memoryNotes: "" });
+                showSaved("Memory cleared");
+              }
+            }}
+          >
+            Forget everything Robert knows about me
+          </button>
         </section>
 
         <section style={styles.section}>
@@ -297,7 +554,7 @@ const styles = {
   section: { background: "#202c33", border: "1px solid #2a3942", borderRadius: 12, padding: 16, marginBottom: 16 },
   h2: { margin: "0 0 10px", fontSize: 14, color: "#00d9a3", textTransform: "uppercase", letterSpacing: "0.04em" },
   p: { margin: "0 0 8px", fontSize: 13, lineHeight: 1.5 },
-  hint: { fontSize: 11, color: "#8696a0", marginTop: 4 },
+  hint: { fontSize: 11, color: "#8696a0", marginTop: 4, marginBottom: 10 },
   field: { marginBottom: 16 },
   label: { display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 },
   textarea: { width: "100%", minHeight: 70, padding: "10px 12px", borderRadius: 8, border: "1px solid #2a3942", background: "#2a3942", color: "#e9edef", fontSize: 14, fontFamily: "inherit" },
@@ -305,6 +562,7 @@ const styles = {
   row: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 14 },
   rowLabel: { fontSize: 13, fontWeight: 600 },
   rowSub: { fontSize: 11, color: "#8696a0", marginTop: 2 },
+  smallBtn: { width: 32, height: 32, borderRadius: 8, border: "1px solid #2a3942", background: "#2a3942", color: "#e9edef", cursor: "pointer", fontSize: 13 },
   dangerBtn: { padding: "10px 14px", borderRadius: 8, border: "1px solid #d9534f", background: "transparent", color: "#d9534f", fontSize: 13, fontWeight: 700, cursor: "pointer", width: "100%", marginTop: 8 },
   primaryBtn: { padding: "10px 14px", borderRadius: 8, border: "none", background: "linear-gradient(90deg, #00a884, #00d9a3)", color: "#05221c", fontSize: 13, fontWeight: 700, cursor: "pointer", width: "100%" },
   pill: { display: "inline-flex", fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 12, background: "rgba(0,168,132,0.18)", color: "#00d9a3" },
