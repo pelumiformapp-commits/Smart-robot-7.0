@@ -191,38 +191,48 @@ export default function ChatPage() {
     const file = e.target.files[0];
     if (!file) return;
 
-    const base64 = await compressImage(file);
+    const { base64, mimeType } = await compressImage(file);
     const userMsg = { role: "user", content: `[Sent an image: ${file.name}]`, previewImage: URL.createObjectURL(file) };
     setMessages((prev) => [...prev, userMsg]);
     setLoading(true);
     setTalking(true);
 
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: input || "What's in this image? If it's a problem, solve it step by step.",
-        history: messages,
-        visitorName,
-        sessionId: getSessionId(),
-        settings: loadSettings(),
-        image: { data: base64, mimeType },
-      }),
-    });
-    const data = await res.json();
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: input || "What's in this image? If it's a problem, solve it step by step.",
+          history: messages,
+          visitorName,
+          sessionId: getSessionId(),
+          settings: loadSettings(),
+          image: { data: base64, mimeType },
+        }),
+      });
 
-    setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
-    setLoading(false);
-    setTalking(false);
-    setInput("");
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        setMessages((prev) => [...prev, { role: "assistant", content: errData.reply || "Sorry, that took too long — please try a smaller or clearer photo." }]);
+        return;
+      }
 
-    if (data.speechText && "speechSynthesis" in window) {
-      window.speechSynthesis.speak(new SpeechSynthesisUtterance(data.speechText));
+      const data = await res.json();
+      setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+
+      if (data.speechText && "speechSynthesis" in window) {
+        window.speechSynthesis.speak(new SpeechSynthesisUtterance(data.speechText));
+      }
+    } catch (err) {
+      setMessages((prev) => [...prev, { role: "assistant", content: "Sorry, something went wrong reading that image. Please try again." }]);
+    } finally {
+      setLoading(false);
+      setTalking(false);
+      setInput("");
+      e.target.value = "";
     }
-
-    e.target.value = "";
   }
-
+  
   function toggleVoiceInput() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
