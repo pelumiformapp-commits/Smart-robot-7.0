@@ -14,6 +14,14 @@ function getSessionId() {
   return id;
 }
 
+function getAdminPassword() {
+  try {
+    return sessionStorage.getItem("robert_admin_pw") || "";
+  } catch (e) {
+    return "";
+  }
+}
+
 function isWalkCommand(text) {
   const t = text.toLowerCase();
   return t.includes("walk") || t.includes("move") || t.includes("step forward");
@@ -96,7 +104,7 @@ function groupWithDateSeparators(msgs) {
 const FONT_SIZES = [13, 14, 15, 16, 18];
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 const QUICK_REPLIES = ["Explain more", "Show an example", "Simplify this"];
-const TOOL_TABS = ["To-dos", "Notes", "Reminders"]; // NEW
+const TOOL_TABS = ["To-dos", "Notes", "Reminders"];
 
 export default function ChatPage() {
   const [visitorName, setVisitorName] = useState(null);
@@ -125,7 +133,6 @@ export default function ChatPage() {
   const [availableVoices, setAvailableVoices] = useState([]);
   const [voicePanelOpen, setVoicePanelOpen] = useState(false);
 
-  // NEW: Tools panel state
   const [toolsOpen, setToolsOpen] = useState(false);
   const [toolTab, setToolTab] = useState("To-dos");
   const [todos, setTodos] = useState([]);
@@ -159,6 +166,10 @@ export default function ChatPage() {
       const populateVoices = () => setAvailableVoices(window.speechSynthesis.getVoices());
       populateVoices();
       window.speechSynthesis.onvoiceschanged = populateVoices;
+    }
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch((err) => console.log("SW registration failed:", err));
     }
   }, []);
 
@@ -199,7 +210,6 @@ export default function ChatPage() {
     if (!searchOpen) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, searchOpen]);
 
-  // NEW: load tools data when the panel opens
   useEffect(() => {
     if (!toolsOpen || !visitorName) return;
     refreshToolsData();
@@ -254,7 +264,7 @@ export default function ChatPage() {
       });
       if (!res.ok) throw new Error("failed");
     } catch (e) {
-      setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, done: !done } : t))); // revert
+      setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, done: !done } : t)));
     }
   }
 
@@ -270,7 +280,7 @@ export default function ChatPage() {
       });
       if (!res.ok) throw new Error("failed");
     } catch (e) {
-      setTodos(prevTodos); // revert
+      setTodos(prevTodos);
     }
   }
 
@@ -305,7 +315,7 @@ export default function ChatPage() {
       });
       if (!res.ok) throw new Error("failed");
     } catch (e) {
-      setNotes(prevNotes); // revert
+      setNotes(prevNotes);
     }
   }
 
@@ -348,11 +358,10 @@ export default function ChatPage() {
       });
       if (!res.ok) throw new Error("failed");
     } catch (e) {
-      setReminders(prevReminders); // revert
+      setReminders(prevReminders);
     }
   }
 
-  // NEW: quick-access smart tool shortcuts — pre-fill and send
   function sendToolShortcut(prefix) {
     setToolsOpen(false);
     setInput(prefix);
@@ -413,6 +422,23 @@ export default function ChatPage() {
     });
   }
 
+  // Iteratively shrinks the image until it's under maxBytes, so large phone photos
+  // never get rejected by the vision API for being too big.
+  async function compressImageToLimit(file, maxBytes = 900000) {
+    let maxWidth = 1000;
+    let quality = 0.85;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const result = await compressImage(file, maxWidth, true, quality);
+      const approxBytes = result.base64.length * 0.75;
+      if (approxBytes <= maxBytes || (maxWidth <= 500 && quality <= 0.5)) {
+        return result;
+      }
+      maxWidth = Math.round(maxWidth * 0.8);
+      quality = Math.max(0.5, quality - 0.1);
+    }
+    return compressImage(file, 500, true, 0.5);
+  }
+
   function nextId() {
     return "m" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
   }
@@ -466,6 +492,7 @@ export default function ChatPage() {
         visitorName,
         sessionId: getSessionId(),
         settings: loadSettings(),
+        adminPassword: getAdminPassword(),
       }),
     });
     return res.json();
@@ -529,6 +556,13 @@ export default function ChatPage() {
     speak(data.speechText || data.reply);
   }
 
+  function handleInputKeyDown(e) {
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      sendMessage(e);
+    }
+  }
+
   async function sendQuickReply(text) {
     setShowQuickReplies(false);
     const userMsg = { id: nextId(), role: "user", content: text, time: new Date().toISOString(), status: "sent" };
@@ -579,7 +613,7 @@ export default function ChatPage() {
     const file = e.target.files[0];
     if (!file) return;
 
-    const { base64, mimeType } = await compressImage(file);
+    const { base64, mimeType } = await compressImageToLimit(file);
     const userMsg = {
       id: nextId(),
       role: "user",
@@ -604,6 +638,7 @@ export default function ChatPage() {
           sessionId: getSessionId(),
           settings: loadSettings(),
           image: { data: base64, mimeType },
+          adminPassword: getAdminPassword(),
         }),
       });
 
@@ -852,7 +887,6 @@ export default function ChatPage() {
             <button type="button" onClick={stopSpeaking} title="Stop speaking" style={{ ...styles.headerIconBtn, background: "#d9534f" }}>⏹️</button>
           )}
           <button type="button" onClick={() => setVoicePanelOpen((v) => !v)} title="Voice settings" style={styles.headerIconBtn}>🎚️</button>
-          {/* NEW: Tools button */}
           <button type="button" onClick={() => setToolsOpen(true)} title="Tools" style={styles.headerIconBtn}>🧰</button>
           <button type="button" onClick={() => setSearchOpen((v) => !v)} title="Search" style={styles.headerIconBtn}>🔍</button>
           <button type="button" onClick={exportChat} title="Export chat" style={styles.headerIconBtn}>⬇️</button>
@@ -1052,7 +1086,13 @@ export default function ChatPage() {
           >
             🎤
           </button>
-          <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Type a message... (try 'walk')" style={styles.input} />
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleInputKeyDown}
+            placeholder="Type a message... (try 'walk')"
+            style={styles.input}
+          />
           <button type="submit" style={{ ...styles.button, background: appearance.accent }} disabled={loading}>
             {editingId ? "Save" : "Send"}
           </button>
@@ -1077,7 +1117,6 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* NEW: Tools panel */}
       {toolsOpen && (
         <div style={styles.modalOverlay} onClick={() => setToolsOpen(false)}>
           <div style={{ ...styles.toolsCard, background: panelBg, color: panelColor }} onClick={(e) => e.stopPropagation()}>
