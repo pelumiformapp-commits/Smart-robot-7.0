@@ -96,6 +96,7 @@ function groupWithDateSeparators(msgs) {
 const FONT_SIZES = [13, 14, 15, 16, 18];
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 const QUICK_REPLIES = ["Explain more", "Show an example", "Simplify this"];
+const TOOL_TABS = ["To-dos", "Notes", "Reminders"]; // NEW
 
 export default function ChatPage() {
   const [visitorName, setVisitorName] = useState(null);
@@ -123,6 +124,19 @@ export default function ChatPage() {
   const [voiceSettings, setVoiceSettings] = useState({ rate: 1, pitch: 1, voiceURI: "" });
   const [availableVoices, setAvailableVoices] = useState([]);
   const [voicePanelOpen, setVoicePanelOpen] = useState(false);
+
+  // NEW: Tools panel state
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [toolTab, setToolTab] = useState("To-dos");
+  const [todos, setTodos] = useState([]);
+  const [notes, setNotes] = useState([]);
+  const [reminders, setReminders] = useState([]);
+  const [toolsLoading, setToolsLoading] = useState(false);
+  const [newTodoText, setNewTodoText] = useState("");
+  const [newNoteText, setNewNoteText] = useState("");
+  const [newReminderText, setNewReminderText] = useState("");
+  const [newReminderTime, setNewReminderTime] = useState("");
+
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -151,15 +165,24 @@ export default function ChatPage() {
   // Load persisted chat history for this session once we know who's visiting
   useEffect(() => {
     if (!visitorName || historyLoaded) return;
-    try {
-      const key = "robert_messages_" + getSessionId();
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length) setMessages(parsed);
+    (async () => {
+      try {
+        const res = await fetch(`/api/messages?sessionId=${getSessionId()}`);
+        const data = await res.json();
+        if (data.messages && data.messages.length) {
+          setMessages(data.messages);
+        }
+      } catch (e) {
+        try {
+          const raw = localStorage.getItem("robert_messages_" + getSessionId());
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length) setMessages(parsed);
+          }
+        } catch (e2) {}
       }
-    } catch (e) {}
-    setHistoryLoaded(true);
+      setHistoryLoaded(true);
+    })();
   }, [visitorName, historyLoaded]);
 
   // Persist chat history whenever messages change (after initial load)
@@ -167,7 +190,6 @@ export default function ChatPage() {
     if (!visitorName || !historyLoaded) return;
     try {
       const key = "robert_messages_" + getSessionId();
-      // strip blob preview URLs — they don't survive reload anyway
       const toStore = messages.map(({ previewImage, ...rest }) => rest);
       localStorage.setItem(key, JSON.stringify(toStore));
     } catch (e) {}
@@ -176,6 +198,165 @@ export default function ChatPage() {
   useEffect(() => {
     if (!searchOpen) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, searchOpen]);
+
+  // NEW: load tools data when the panel opens
+  useEffect(() => {
+    if (!toolsOpen || !visitorName) return;
+    refreshToolsData();
+  }, [toolsOpen, visitorName]);
+
+  async function refreshToolsData() {
+    setToolsLoading(true);
+    const sessionId = getSessionId();
+    try {
+      const [todosRes, notesRes, remindersRes] = await Promise.all([
+        fetch(`/api/todos?sessionId=${sessionId}`).then((r) => r.json()),
+        fetch(`/api/notes?sessionId=${sessionId}`).then((r) => r.json()),
+        fetch(`/api/reminders?sessionId=${sessionId}`).then((r) => r.json()),
+      ]);
+      if (todosRes.todos) setTodos(todosRes.todos);
+      if (notesRes.notes) setNotes(notesRes.notes);
+      if (remindersRes.reminders) setReminders(remindersRes.reminders);
+    } catch (e) {
+      console.log("Failed to load tools data", e);
+    } finally {
+      setToolsLoading(false);
+    }
+  }
+
+  async function addTodo() {
+    if (!newTodoText.trim()) return;
+    const sessionId = getSessionId();
+    const text = newTodoText.trim();
+    setNewTodoText("");
+    try {
+      const res = await fetch("/api/todos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, content: text }),
+      });
+      const data = await res.json();
+      if (data.todo) setTodos((prev) => [...prev, data.todo]);
+      else alert(data.error || "Couldn't add that to-do.");
+    } catch (e) {
+      alert("Couldn't add that to-do. Check your connection.");
+    }
+  }
+
+  async function toggleTodo(id, done) {
+    const sessionId = getSessionId();
+    setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, done } : t)));
+    try {
+      const res = await fetch("/api/todos", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, sessionId, done }),
+      });
+      if (!res.ok) throw new Error("failed");
+    } catch (e) {
+      setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, done: !done } : t))); // revert
+    }
+  }
+
+  async function deleteTodo(id) {
+    const sessionId = getSessionId();
+    const prevTodos = todos;
+    setTodos((prev) => prev.filter((t) => t.id !== id));
+    try {
+      const res = await fetch("/api/todos", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, sessionId }),
+      });
+      if (!res.ok) throw new Error("failed");
+    } catch (e) {
+      setTodos(prevTodos); // revert
+    }
+  }
+
+  async function addNote() {
+    if (!newNoteText.trim()) return;
+    const sessionId = getSessionId();
+    const text = newNoteText.trim();
+    setNewNoteText("");
+    try {
+      const res = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, content: text }),
+      });
+      const data = await res.json();
+      if (data.note) setNotes((prev) => [data.note, ...prev]);
+      else alert(data.error || "Couldn't save that note.");
+    } catch (e) {
+      alert("Couldn't save that note. Check your connection.");
+    }
+  }
+
+  async function deleteNote(id) {
+    const sessionId = getSessionId();
+    const prevNotes = notes;
+    setNotes((prev) => prev.filter((n) => n.id !== id));
+    try {
+      const res = await fetch("/api/notes", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, sessionId }),
+      });
+      if (!res.ok) throw new Error("failed");
+    } catch (e) {
+      setNotes(prevNotes); // revert
+    }
+  }
+
+  async function addReminder() {
+    if (!newReminderText.trim() || !newReminderTime) {
+      alert("Please enter both a reminder and a time.");
+      return;
+    }
+    const sessionId = getSessionId();
+    const remindAt = new Date(newReminderTime).toISOString();
+    const text = newReminderText.trim();
+    setNewReminderText("");
+    setNewReminderTime("");
+    try {
+      const res = await fetch("/api/reminders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, content: text, remindAt }),
+      });
+      const data = await res.json();
+      if (data.reminder) {
+        setReminders((prev) => [...prev, data.reminder].sort((a, b) => new Date(a.remind_at) - new Date(b.remind_at)));
+      } else {
+        alert(data.error || "Couldn't save that reminder.");
+      }
+    } catch (e) {
+      alert("Couldn't save that reminder. Check your connection.");
+    }
+  }
+
+  async function deleteReminder(id) {
+    const sessionId = getSessionId();
+    const prevReminders = reminders;
+    setReminders((prev) => prev.filter((r) => r.id !== id));
+    try {
+      const res = await fetch("/api/reminders", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, sessionId }),
+      });
+      if (!res.ok) throw new Error("failed");
+    } catch (e) {
+      setReminders(prevReminders); // revert
+    }
+  }
+
+  // NEW: quick-access smart tool shortcuts — pre-fill and send
+  function sendToolShortcut(prefix) {
+    setToolsOpen(false);
+    setInput(prefix);
+  }
 
   function saveName(e) {
     e.preventDefault();
@@ -636,6 +817,8 @@ export default function ChatPage() {
   const bubbleAssistantBg = isDark ? "#202c33" : "#e5e9f0";
   const bubbleAssistantColor = isDark ? "#e9edef" : "#2e3440";
   const chatFontSize = FONT_SIZES[fontIndex];
+  const panelBg = isDark ? "#202c33" : "#fff";
+  const panelColor = bubbleAssistantColor;
 
   return (
     <div style={{ ...styles.page, background: pageBg }}>
@@ -669,6 +852,8 @@ export default function ChatPage() {
             <button type="button" onClick={stopSpeaking} title="Stop speaking" style={{ ...styles.headerIconBtn, background: "#d9534f" }}>⏹️</button>
           )}
           <button type="button" onClick={() => setVoicePanelOpen((v) => !v)} title="Voice settings" style={styles.headerIconBtn}>🎚️</button>
+          {/* NEW: Tools button */}
+          <button type="button" onClick={() => setToolsOpen(true)} title="Tools" style={styles.headerIconBtn}>🧰</button>
           <button type="button" onClick={() => setSearchOpen((v) => !v)} title="Search" style={styles.headerIconBtn}>🔍</button>
           <button type="button" onClick={exportChat} title="Export chat" style={styles.headerIconBtn}>⬇️</button>
           <button type="button" onClick={clearChat} title="Clear chat" style={styles.headerIconBtn}>🗑️</button>
@@ -677,7 +862,7 @@ export default function ChatPage() {
       </div>
 
       {voicePanelOpen && (
-        <div style={{ ...styles.voicePanel, background: isDark ? "#202c33" : "#fff", color: bubbleAssistantColor }}>
+        <div style={{ ...styles.voicePanel, background: panelBg, color: panelColor }}>
           <label style={styles.voicePanelLabel}>
             Voice
             <select
@@ -718,7 +903,7 @@ export default function ChatPage() {
       )}
 
       {searchOpen && (
-        <div style={{ ...styles.searchBar, background: isDark ? "#202c33" : "#fff" }}>
+        <div style={{ ...styles.searchBar, background: panelBg }}>
           <input
             autoFocus
             value={searchQuery}
@@ -731,10 +916,10 @@ export default function ChatPage() {
       )}
 
       {pinnedList.length > 0 && (
-        <div style={{ ...styles.pinnedBar, background: isDark ? "#202c33" : "#fff" }}>
+        <div style={{ ...styles.pinnedBar, background: panelBg }}>
           {pinnedList.map(([id, text]) => (
             <div key={id} style={styles.pinnedItem}>
-              <span style={{ flex: 1, fontSize: 12, color: bubbleAssistantColor }}>📌 {text}</span>
+              <span style={{ flex: 1, fontSize: 12, color: panelColor }}>📌 {text}</span>
               <button type="button" onClick={() => togglePin(id, "")} style={styles.pinnedUnpin}>✕</button>
             </div>
           ))}
@@ -876,7 +1061,7 @@ export default function ChatPage() {
 
       {detailMessage && (
         <div style={styles.modalOverlay} onClick={() => setDetailFor(null)}>
-          <div style={{ ...styles.modalCard, background: isDark ? "#202c33" : "#fff", color: bubbleAssistantColor }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ ...styles.modalCard, background: panelBg, color: panelColor }} onClick={(e) => e.stopPropagation()}>
             <h3 style={{ marginTop: 0 }}>Message details</h3>
             <p style={styles.detailRow}><strong>From:</strong> {detailMessage.role === "user" ? visitorName : "Robert"}</p>
             <p style={styles.detailRow}><strong>Sent:</strong> {formatFullDateTime(detailMessage.time)}</p>
@@ -888,6 +1073,127 @@ export default function ChatPage() {
             {detailMessage.edited && <p style={styles.detailRow}><em>This message was edited</em></p>}
             {detailMessage.regenerated && <p style={styles.detailRow}><em>This response was regenerated</em></p>}
             <button type="button" style={{ ...styles.button, background: appearance.accent, marginTop: 8 }} onClick={() => setDetailFor(null)}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {/* NEW: Tools panel */}
+      {toolsOpen && (
+        <div style={styles.modalOverlay} onClick={() => setToolsOpen(false)}>
+          <div style={{ ...styles.toolsCard, background: panelBg, color: panelColor }} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.toolsHeader}>
+              <h3 style={{ margin: 0 }}>Tools</h3>
+              <button type="button" style={styles.headerIconBtn} onClick={() => setToolsOpen(false)}>✕</button>
+            </div>
+
+            <div style={styles.toolsShortcutRow}>
+              <button type="button" style={{ ...styles.shortcutBtn, borderColor: appearance.accent }} onClick={() => sendToolShortcut("Calculate ")}>🧮 Calculate</button>
+              <button type="button" style={{ ...styles.shortcutBtn, borderColor: appearance.accent }} onClick={() => sendToolShortcut("Translate  to Spanish")}>🌐 Translate</button>
+              <button type="button" style={{ ...styles.shortcutBtn, borderColor: appearance.accent }} onClick={() => sendToolShortcut("Summarize: ")}>📝 Summarize</button>
+            </div>
+
+            <div style={styles.toolTabsRow}>
+              {TOOL_TABS.map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setToolTab(tab)}
+                  style={{
+                    ...styles.toolTabBtn,
+                    borderBottom: toolTab === tab ? `2px solid ${appearance.accent}` : "2px solid transparent",
+                    fontWeight: toolTab === tab ? 700 : 500,
+                  }}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
+
+            <div style={styles.toolsBody}>
+              {toolsLoading && <p style={{ fontSize: 12, opacity: 0.7 }}>Loading…</p>}
+
+              {!toolsLoading && toolTab === "To-dos" && (
+                <>
+                  <div style={styles.toolAddRow}>
+                    <input
+                      value={newTodoText}
+                      onChange={(e) => setNewTodoText(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && addTodo()}
+                      placeholder="Add a to-do..."
+                      style={{ ...styles.input, flex: 1 }}
+                    />
+                    <button type="button" style={{ ...styles.button, background: appearance.accent }} onClick={addTodo}>Add</button>
+                  </div>
+                  {todos.length === 0 && <p style={styles.emptyText}>No to-dos yet.</p>}
+                  {todos.map((t) => (
+                    <div key={t.id} style={styles.listRow}>
+                      <input type="checkbox" checked={t.done} onChange={(e) => toggleTodo(t.id, e.target.checked)} />
+                      <span style={{ flex: 1, fontSize: 14, textDecoration: t.done ? "line-through" : "none", opacity: t.done ? 0.6 : 1 }}>
+                        {t.content}
+                      </span>
+                      <button type="button" style={styles.msgActionBtn} onClick={() => deleteTodo(t.id)}>🗑️</button>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {!toolsLoading && toolTab === "Notes" && (
+                <>
+                  <div style={styles.toolAddRow}>
+                    <input
+                      value={newNoteText}
+                      onChange={(e) => setNewNoteText(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && addNote()}
+                      placeholder="Quick note..."
+                      style={{ ...styles.input, flex: 1 }}
+                    />
+                    <button type="button" style={{ ...styles.button, background: appearance.accent }} onClick={addNote}>Save</button>
+                  </div>
+                  {notes.length === 0 && <p style={styles.emptyText}>No notes yet.</p>}
+                  {notes.map((n) => (
+                    <div key={n.id} style={styles.listRow}>
+                      <span style={{ flex: 1, fontSize: 14 }}>{n.content}</span>
+                      <button type="button" style={styles.msgActionBtn} onClick={() => deleteNote(n.id)}>🗑️</button>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {!toolsLoading && toolTab === "Reminders" && (
+                <>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
+                    <input
+                      value={newReminderText}
+                      onChange={(e) => setNewReminderText(e.target.value)}
+                      placeholder="Remind me to..."
+                      style={styles.input}
+                    />
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input
+                        type="datetime-local"
+                        value={newReminderTime}
+                        onChange={(e) => setNewReminderTime(e.target.value)}
+                        style={{ ...styles.input, flex: 1 }}
+                      />
+                      <button type="button" style={{ ...styles.button, background: appearance.accent }} onClick={addReminder}>Set</button>
+                    </div>
+                    <p style={{ fontSize: 11, opacity: 0.6, margin: 0 }}>
+                      Note: this saves the reminder, but a real lock-screen notification needs the native Android alarm system (in progress).
+                    </p>
+                  </div>
+                  {reminders.length === 0 && <p style={styles.emptyText}>No reminders yet.</p>}
+                  {reminders.map((r) => (
+                    <div key={r.id} style={styles.listRow}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 14 }}>{r.content}</div>
+                        <div style={{ fontSize: 11, opacity: 0.7 }}>{formatFullDateTime(r.remind_at)}{r.sent ? " · sent" : ""}</div>
+                      </div>
+                      <button type="button" style={styles.msgActionBtn} onClick={() => deleteReminder(r.id)}>🗑️</button>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -966,4 +1272,14 @@ const styles = {
   modalOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 },
   modalCard: { borderRadius: 12, padding: 20, width: "85%", maxWidth: 340, boxShadow: "0 8px 24px rgba(0,0,0,0.3)" },
   detailRow: { fontSize: 13, margin: "6px 0" },
+  toolsCard: { borderRadius: 12, padding: 16, width: "92%", maxWidth: 420, maxHeight: "80vh", display: "flex", flexDirection: "column", boxShadow: "0 8px 24px rgba(0,0,0,0.3)" },
+  toolsHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
+  toolsShortcutRow: { display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" },
+  shortcutBtn: { background: "transparent", border: "1px solid", borderRadius: 14, padding: "6px 10px", fontSize: 12, cursor: "pointer", color: "inherit" },
+  toolTabsRow: { display: "flex", gap: 12, borderBottom: "1px solid rgba(128,128,128,0.3)", marginBottom: 10 },
+  toolTabBtn: { background: "none", border: "none", padding: "6px 2px", fontSize: 13, cursor: "pointer", color: "inherit" },
+  toolsBody: { overflowY: "auto", flex: 1 },
+  toolAddRow: { display: "flex", gap: 6, marginBottom: 10 },
+  listRow: { display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid rgba(128,128,128,0.15)" },
+  emptyText: { fontSize: 12, opacity: 0.6, textAlign: "center", padding: "12px 0" },
 };
