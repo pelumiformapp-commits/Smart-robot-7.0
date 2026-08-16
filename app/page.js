@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 function getSessionId() {
   let id = localStorage.getItem("robert_session_id");
@@ -39,6 +41,7 @@ function loadSettings() {
     smartSuggestions: false,
     creativity: "medium",
     memoryNotes: "",
+    preferredLanguage: "English",
   };
 }
 
@@ -74,6 +77,19 @@ function formatFullDateTime(iso) {
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+function formatRelativeTime(iso) {
+  if (!iso) return "";
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min${mins === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days} day${days === 1 ? "" : "s"} ago`;
+  return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 function formatDateLabel(iso) {
@@ -131,7 +147,7 @@ export default function ChatPage() {
   const [speaking, setSpeaking] = useState(false);
   const [voiceSettings, setVoiceSettings] = useState({ rate: 1, pitch: 1, voiceURI: "" });
   const [availableVoices, setAvailableVoices] = useState([]);
-  const [voicePanelOpen, setVoicePanelOpen] = useState(false);
+  const [lastSeenText, setLastSeenText] = useState("");
 
   const [toolsOpen, setToolsOpen] = useState(false);
   const [toolTab, setToolTab] = useState("To-dos");
@@ -143,6 +159,9 @@ export default function ChatPage() {
   const [newNoteText, setNewNoteText] = useState("");
   const [newReminderText, setNewReminderText] = useState("");
   const [newReminderTime, setNewReminderTime] = useState("");
+
+  const [pendingImage, setPendingImage] = useState(null); // { file, previewUrl }
+  const [imageCaption, setImageCaption] = useState("");
 
   const bottomRef = useRef(null);
 
@@ -214,6 +233,21 @@ export default function ChatPage() {
     if (!toolsOpen || !visitorName) return;
     refreshToolsData();
   }, [toolsOpen, visitorName]);
+
+  // "Last seen" — reflects the previous session, fetched once before this
+  // session's own activity updates it.
+  useEffect(() => {
+    if (!visitorName) return;
+    (async () => {
+      try {
+        const res = await fetch(`/api/profile?name=${encodeURIComponent(visitorName)}`);
+        const data = await res.json();
+        if (data.hasProfile && data.lastActive) {
+          setLastSeenText("Last seen " + formatRelativeTime(data.lastActive));
+        }
+      } catch (e) {}
+    })();
+  }, [visitorName]);
 
   async function refreshToolsData() {
     setToolsLoading(true);
@@ -395,7 +429,7 @@ export default function ChatPage() {
     });
   }
 
-  function compressImage(file, maxWidth = 1000, useJpeg = true, quality = 0.85) {
+  function compressImage(file, maxWidth = 1400, useJpeg = true, quality = 0.9) {
     return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
@@ -422,29 +456,42 @@ export default function ChatPage() {
     });
   }
 
-  // Iteratively shrinks the image until it's under maxBytes, so large phone photos
-  // never get rejected by the vision API for being too big.
-  async function compressImageToLimit(file, maxBytes = 900000) {
-    let maxWidth = 1000;
-    let quality = 0.85;
+  // Keeps resolution/quality as high as reasonably possible — important for
+  // reading small text and equations — only stepping down if the file is still
+  // too large after a few passes.
+  async function compressImageToLimit(file, maxBytes = 1800000) {
+    let maxWidth = 1400;
+    let quality = 0.9;
     for (let attempt = 0; attempt < 6; attempt++) {
       const result = await compressImage(file, maxWidth, true, quality);
       const approxBytes = result.base64.length * 0.75;
-      if (approxBytes <= maxBytes || (maxWidth <= 500 && quality <= 0.5)) {
+      if (approxBytes <= maxBytes || (maxWidth <= 900 && quality <= 0.7)) {
         return result;
       }
-      maxWidth = Math.round(maxWidth * 0.8);
-      quality = Math.max(0.5, quality - 0.1);
+      maxWidth = Math.round(maxWidth * 0.85);
+      quality = Math.max(0.7, quality - 0.05);
     }
-    return compressImage(file, 500, true, 0.5);
+    return compressImage(file, 900, true, 0.7);
   }
 
   function nextId() {
     return "m" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
   }
 
+  function unlockSpeechSynthesis() {
+    if (!("speechSynthesis" in window) || window._ttsUnlocked) return;
+    try {
+      window.speechSynthesis.resume();
+      const unlock = new SpeechSynthesisUtterance(" ");
+      unlock.volume = 0;
+      window.speechSynthesis.speak(unlock);
+      window._ttsUnlocked = true;
+    } catch (e) {}
+  }
+
   function speak(text) {
     if (!autoTalk || !text || !("speechSynthesis" in window)) return;
+    window.speechSynthesis.resume();
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = voiceSettings.rate;
@@ -462,14 +509,6 @@ export default function ChatPage() {
   function stopSpeaking() {
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
     setSpeaking(false);
-  }
-
-  function updateVoiceSetting(patch) {
-    setVoiceSettings((prev) => {
-      const next = { ...prev, ...patch };
-      localStorage.setItem("robert_voice_settings", JSON.stringify(next));
-      return next;
-    });
   }
 
   function markDelivered(id) {
@@ -502,6 +541,7 @@ export default function ChatPage() {
     e.preventDefault();
     if (!input.trim()) return;
 
+    unlockSpeechSynthesis();
     if (isWalkCommand(input)) triggerWalk();
 
     if (editingId) {
@@ -557,13 +597,15 @@ export default function ChatPage() {
   }
 
   function handleInputKeyDown(e) {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    const isEnter = e.key === "Enter" || e.keyCode === 13;
+    if (isEnter && !e.shiftKey) {
       e.preventDefault();
       sendMessage(e);
     }
   }
 
   async function sendQuickReply(text) {
+    unlockSpeechSynthesis();
     setShowQuickReplies(false);
     const userMsg = { id: nextId(), role: "user", content: text, time: new Date().toISOString(), status: "sent" };
     const newMessages = [...messages, userMsg];
@@ -609,16 +651,37 @@ export default function ChatPage() {
     }
   }
 
-  async function handleImageUpload(e) {
+  // Picking an image now opens a preview instead of sending immediately
+  function handleImageSelect(e) {
     const file = e.target.files[0];
     if (!file) return;
+    const previewUrl = URL.createObjectURL(file);
+    setPendingImage({ file, previewUrl });
+    setImageCaption(input);
+    e.target.value = "";
+  }
+
+  function cancelPendingImage() {
+    if (pendingImage?.previewUrl) URL.revokeObjectURL(pendingImage.previewUrl);
+    setPendingImage(null);
+    setImageCaption("");
+  }
+
+  async function confirmSendImage() {
+    if (!pendingImage) return;
+    unlockSpeechSynthesis();
+
+    const { file, previewUrl } = pendingImage;
+    const caption = imageCaption;
+    setPendingImage(null);
+    setImageCaption("");
 
     const { base64, mimeType } = await compressImageToLimit(file);
     const userMsg = {
       id: nextId(),
       role: "user",
-      content: `[Sent an image: ${file.name}]`,
-      previewImage: URL.createObjectURL(file),
+      content: caption || `[Sent an image: ${file.name}]`,
+      previewImage: previewUrl,
       time: new Date().toISOString(),
       status: "sent",
     };
@@ -632,7 +695,7 @@ export default function ChatPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: input || "What's in this image? If it's a problem, solve it step by step.",
+          message: caption || "What's in this image? If it's a problem, solve it step by step.",
           history: messages,
           visitorName,
           sessionId: getSessionId(),
@@ -669,11 +732,11 @@ export default function ChatPage() {
       setLoading(false);
       setTalking(false);
       setInput("");
-      e.target.value = "";
     }
   }
 
   function toggleVoiceInput() {
+    unlockSpeechSynthesis();
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       alert("Voice input isn't supported on this browser.");
@@ -877,7 +940,13 @@ export default function ChatPage() {
             <circle cx="80" cy="2" r="4" fill="#a3be8c" className="antenna-light" />
           </svg>
         </div>
-        <span style={{ fontSize: 12, color: "#eceff4" }}>Hi, {visitorName}</span>
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          <span style={{ fontSize: 12, color: "#eceff4" }}>
+            Robert · <span style={{ color: "#a3be8c" }}>● Active</span>
+          </span>
+          <span style={{ fontSize: 11, color: "#eceff4" }}>Hi, {visitorName}</span>
+          {lastSeenText && <span style={{ fontSize: 10, color: "rgba(236,239,244,0.6)" }}>{lastSeenText}</span>}
+        </div>
         <div style={styles.headerBtnRow}>
           <button type="button" onClick={() => changeFont(-1)} title="Smaller text" style={styles.headerIconBtn}>A−</button>
           <button type="button" onClick={() => changeFont(1)} title="Larger text" style={styles.headerIconBtn}>A+</button>
@@ -886,7 +955,6 @@ export default function ChatPage() {
           {speaking && (
             <button type="button" onClick={stopSpeaking} title="Stop speaking" style={{ ...styles.headerIconBtn, background: "#d9534f" }}>⏹️</button>
           )}
-          <button type="button" onClick={() => setVoicePanelOpen((v) => !v)} title="Voice settings" style={styles.headerIconBtn}>🎚️</button>
           <button type="button" onClick={() => setToolsOpen(true)} title="Tools" style={styles.headerIconBtn}>🧰</button>
           <button type="button" onClick={() => setSearchOpen((v) => !v)} title="Search" style={styles.headerIconBtn}>🔍</button>
           <button type="button" onClick={exportChat} title="Export chat" style={styles.headerIconBtn}>⬇️</button>
@@ -894,47 +962,6 @@ export default function ChatPage() {
           <a href="/settings" style={styles.settingsLink}>⚙️</a>
         </div>
       </div>
-
-      {voicePanelOpen && (
-        <div style={{ ...styles.voicePanel, background: panelBg, color: panelColor }}>
-          <label style={styles.voicePanelLabel}>
-            Voice
-            <select
-              value={voiceSettings.voiceURI}
-              onChange={(e) => updateVoiceSetting({ voiceURI: e.target.value })}
-              style={styles.voiceSelect}
-            >
-              <option value="">Default</option>
-              {availableVoices.map((v) => (
-                <option key={v.voiceURI} value={v.voiceURI}>{v.name} ({v.lang})</option>
-              ))}
-            </select>
-          </label>
-          <label style={styles.voicePanelLabel}>
-            Speed: {voiceSettings.rate.toFixed(1)}x
-            <input
-              type="range" min="0.5" max="2" step="0.1"
-              value={voiceSettings.rate}
-              onChange={(e) => updateVoiceSetting({ rate: parseFloat(e.target.value) })}
-            />
-          </label>
-          <label style={styles.voicePanelLabel}>
-            Pitch: {voiceSettings.pitch.toFixed(1)}
-            <input
-              type="range" min="0" max="2" step="0.1"
-              value={voiceSettings.pitch}
-              onChange={(e) => updateVoiceSetting({ pitch: parseFloat(e.target.value) })}
-            />
-          </label>
-          <button
-            type="button"
-            style={{ ...styles.headerIconBtn, alignSelf: "flex-start", background: appearance.accent }}
-            onClick={() => speak("This is how I sound.")}
-          >
-            Test voice
-          </button>
-        </div>
-      )}
 
       {searchOpen && (
         <div style={{ ...styles.searchBar, background: panelBg }}>
@@ -991,7 +1018,27 @@ export default function ChatPage() {
                 )}
                 {m.role === "assistant" ? (
                   <div className="md-content">
-                    <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkMath]}
+                      rehypePlugins={[rehypeKatex]}
+                      components={{
+                        code({ inline, className, children, ...props }) {
+                          const match = /language-(\w+)/.exec(className || "");
+                          return !inline && match ? (
+                            <SyntaxHighlighter
+                              style={vscDarkPlus}
+                              language={match[1]}
+                              PreTag="div"
+                              customStyle={{ borderRadius: 8, fontSize: 13, margin: "6px 0" }}
+                            >
+                              {String(children).replace(/\n$/, "")}
+                            </SyntaxHighlighter>
+                          ) : (
+                            <code className={className} {...props}>{children}</code>
+                          );
+                        },
+                      }}
+                    >
                       {m.content}
                     </ReactMarkdown>
                   </div>
@@ -1075,7 +1122,7 @@ export default function ChatPage() {
 
         <form onSubmit={sendMessage} style={styles.inputRow}>
           <input type="file" id="docUpload" accept=".pdf,.txt" style={{ display: "none" }} onChange={handleDocUpload} />
-          <input type="file" id="imgUpload" accept="image/*" style={{ display: "none" }} onChange={handleImageUpload} />
+          <input type="file" id="imgUpload" accept="image/*" style={{ display: "none" }} onChange={handleImageSelect} />
           <button type="button" style={styles.iconBtn} onClick={() => document.getElementById("docUpload").click()}>📎</button>
           <button type="button" style={styles.iconBtn} onClick={() => document.getElementById("imgUpload").click()}>📷</button>
           <button
@@ -1090,6 +1137,7 @@ export default function ChatPage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleInputKeyDown}
+            enterKeyHint="send"
             placeholder="Type a message... (try 'walk')"
             style={styles.input}
           />
@@ -1098,6 +1146,25 @@ export default function ChatPage() {
           </button>
         </form>
       </div>
+
+      {pendingImage && (
+        <div style={styles.modalOverlay} onClick={cancelPendingImage}>
+          <div style={{ ...styles.modalCard, background: panelBg, color: panelColor, maxWidth: 380 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>Send this image?</h3>
+            <img src={pendingImage.previewUrl} alt="Preview" style={{ width: "100%", borderRadius: 8, marginBottom: 10 }} />
+            <input
+              value={imageCaption}
+              onChange={(e) => setImageCaption(e.target.value)}
+              placeholder="Add a question or caption (optional)"
+              style={{ ...styles.input, marginBottom: 10, width: "100%" }}
+            />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="button" style={{ ...styles.iconBtn, flex: 1 }} onClick={cancelPendingImage}>Cancel</button>
+              <button type="button" style={{ ...styles.button, flex: 1, background: appearance.accent }} onClick={confirmSendImage}>Send</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {detailMessage && (
         <div style={styles.modalOverlay} onClick={() => setDetailFor(null)}>
@@ -1129,6 +1196,7 @@ export default function ChatPage() {
               <button type="button" style={{ ...styles.shortcutBtn, borderColor: appearance.accent }} onClick={() => sendToolShortcut("Calculate ")}>🧮 Calculate</button>
               <button type="button" style={{ ...styles.shortcutBtn, borderColor: appearance.accent }} onClick={() => sendToolShortcut("Translate  to Spanish")}>🌐 Translate</button>
               <button type="button" style={{ ...styles.shortcutBtn, borderColor: appearance.accent }} onClick={() => sendToolShortcut("Summarize: ")}>📝 Summarize</button>
+              <button type="button" style={{ ...styles.shortcutBtn, borderColor: appearance.accent }} onClick={() => sendToolShortcut("Write code in  to ")}>💻 Code</button>
             </div>
 
             <div style={styles.toolTabsRow}>
@@ -1217,7 +1285,7 @@ export default function ChatPage() {
                       <button type="button" style={{ ...styles.button, background: appearance.accent }} onClick={addReminder}>Set</button>
                     </div>
                     <p style={{ fontSize: 11, opacity: 0.6, margin: 0 }}>
-                      Note: this saves the reminder, but a real lock-screen notification needs the native Android alarm system (in progress).
+                      Real notifications for these need Alarm Notifications enabled in Settings.
                     </p>
                   </div>
                   {reminders.length === 0 && <p style={styles.emptyText}>No reminders yet.</p>}
@@ -1278,9 +1346,6 @@ const styles = {
   headerBtnRow: { marginLeft: "auto", display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" },
   headerIconBtn: { background: "rgba(255,255,255,0.1)", border: "none", color: "#eceff4", fontSize: 12, borderRadius: 6, padding: "4px 6px", cursor: "pointer" },
   settingsLink: { color: "#eceff4", textDecoration: "none", fontSize: 16 },
-  voicePanel: { display: "flex", flexDirection: "column", gap: 8, padding: "10px 14px", borderBottom: "1px solid #d8dee9" },
-  voicePanelLabel: { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600 },
-  voiceSelect: { padding: "4px 6px", borderRadius: 6, border: "1px solid #d8dee9" },
   searchBar: { display: "flex", gap: 6, padding: "6px 10px", borderBottom: "1px solid #d8dee9" },
   pinnedBar: { display: "flex", flexDirection: "column", gap: 4, padding: "6px 10px", borderBottom: "1px solid #d8dee9", maxHeight: 100, overflowY: "auto" },
   pinnedItem: { display: "flex", alignItems: "center", gap: 6, background: "rgba(0,0,0,0.05)", borderRadius: 8, padding: "4px 8px" },
