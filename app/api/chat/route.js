@@ -1,5 +1,8 @@
 import { getSql } from "../../../lib/db";
 import { buildSystemPrompt, getAIReply, cleanTextForSpeech, wantsImageGeneration, generateImageGemini, askVision, sanitizeReply, CREATOR_NAME } from "../../../lib/ai";
+
+export const maxDuration = 60;
+
 const DAILY_LIMIT = 30;
 
 async function checkDailyLimit(sql, sessionId) {
@@ -54,6 +57,26 @@ export async function POST(req) {
       console.log("Vision failed:", err.message);
       return Response.json({ reply: "Sorry, I couldn't read that image just now." });
     }
+  }
+
+  // handle "yes" confirming a previous image transcription
+  const lastAssistantMsg = (history || []).slice().reverse().find((m) => m.role === "assistant");
+  const isConfirmingImage = lastAssistantMsg?.content?.includes("I read this as:") && /^\s*(yes|yeah|yep|correct|that's right)\s*$/i.test(message);
+
+  if (isConfirmingImage) {
+    const solvePrompt = `Solve this fully now, step by step, ending with a clear "Answer:" line: ${lastAssistantMsg.content}`;
+    const systemPromptConfirm = buildSystemPrompt({ visitorName, isCreator, settings });
+    const solveMessages = [
+      { role: "system", content: systemPromptConfirm },
+      { role: "user", content: solvePrompt },
+    ];
+    const solvedReply = await getAIReply(solveMessages);
+
+    await sql`
+      INSERT INTO messages (visitor_name, session_id, role, content)
+      VALUES (${visitorName || "Guest"}, ${sessionId}, 'assistant', ${solvedReply})
+    `;
+    return Response.json({ reply: solvedReply, speechText: cleanTextForSpeech(solvedReply) });
   }
 
   // image generation branch
