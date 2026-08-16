@@ -43,7 +43,7 @@ export async function POST(req) {
   // image understanding branch
   if (image) {
     try {
-      const visionReply = await askVision(image.data, image.mimeType, message);
+      const visionReply = await askVision(image.data, image.mimeType, message, settings);
       const cleanReply = sanitizeReply(visionReply);
 
       await sql`
