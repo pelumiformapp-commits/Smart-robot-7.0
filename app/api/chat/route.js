@@ -1,6 +1,5 @@
 import { getSql } from "../../../lib/db";
-import { buildSystemPrompt, getAIReply, cleanTextForSpeech, wantsImageGeneration, generateImageHF, askVision, sanitizeReply, CREATOR_NAME } from "../../../lib/ai";
-
+import { buildSystemPrompt, getAIReply, cleanTextForSpeech, wantsImageGeneration, generateImageGemini, askVision, sanitizeReply, CREATOR_NAME } from "../../../lib/ai";
 const DAILY_LIMIT = 30;
 
 async function checkDailyLimit(sql, sessionId) {
@@ -60,7 +59,7 @@ export async function POST(req) {
   // image generation branch
   if (wantsImageGeneration(message)) {
     try {
-      const imageBase64 = await generateImageHF(message);
+      const imageBase64 = await generateImageGemini(message);
       const replyText = "Here you go!";
       await sql`
         INSERT INTO messages (visitor_name, session_id, role, content)
