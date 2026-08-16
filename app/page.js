@@ -42,6 +42,36 @@ function loadAppearance() {
   };
 }
 
+function formatTime(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatDateLabel(iso) {
+  const d = new Date(iso || Date.now());
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  const sameDay = (a, b) => a.toDateString() === b.toDateString();
+  if (sameDay(d, today)) return "Today";
+  if (sameDay(d, yesterday)) return "Yesterday";
+  return d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+function groupWithDateSeparators(msgs) {
+  const out = [];
+  let lastLabel = null;
+  msgs.forEach((m) => {
+    const label = formatDateLabel(m.time);
+    if (label !== lastLabel) {
+      out.push({ type: "separator", id: "sep-" + label + "-" + m.id, label });
+      lastLabel = label;
+    }
+    out.push({ type: "message", data: m });
+  });
+  return out;
+}
+
 const FONT_SIZES = [13, 14, 15, 16, 18];
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 const QUICK_REPLIES = ["Explain more", "Show an example", "Simplify this"];
@@ -64,6 +94,8 @@ export default function ChatPage() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [showQuickReplies, setShowQuickReplies] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [regeneratingId, setRegeneratingId] = useState(null);
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -96,7 +128,7 @@ export default function ChatPage() {
     if (!hideGreeting) {
       const template = localStorage.getItem("robert_welcome_message") || "Hi [Username]! I'm Robert. Ask me anything.";
       const greeting = template.replace(/\[Username\]/g, nameInput.trim());
-      setMessages([{ id: "m0", role: "assistant", content: greeting }]);
+      setMessages([{ id: "m0", role: "assistant", content: greeting, time: new Date().toISOString() }]);
     }
   }
 
@@ -151,39 +183,84 @@ export default function ChatPage() {
     window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
   }
 
+  function markDelivered(id) {
+    setTimeout(() => {
+      setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, status: "delivered" } : m)));
+    }, 350);
+  }
+
+  function markSeen(id) {
+    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, status: "seen" } : m)));
+  }
+
+  async function fetchReply(message, history) {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        history,
+        visitorName,
+        sessionId: getSessionId(),
+        settings: loadSettings(),
+      }),
+    });
+    return res.json();
+  }
+
   async function sendMessage(e) {
     e.preventDefault();
     if (!input.trim()) return;
 
     if (isWalkCommand(input)) triggerWalk();
 
-    const userMsg = { id: nextId(), role: "user", content: input };
+    // Editing an existing message: replace it, drop everything after it, re-fetch
+    if (editingId) {
+      const idx = messages.findIndex((m) => m.id === editingId);
+      const updatedMsg = {
+        ...messages[idx],
+        content: input,
+        time: new Date().toISOString(),
+        status: "sent",
+        edited: true,
+      };
+      const trimmed = [...messages.slice(0, idx), updatedMsg];
+      setMessages(trimmed);
+      setInput("");
+      setEditingId(null);
+      setLoading(true);
+      setTalking(true);
+      markDelivered(updatedMsg.id);
+
+      const data = await fetchReply(updatedMsg.content, trimmed.slice(0, -1));
+      setMessages((prev) => [
+        ...prev,
+        { id: nextId(), role: "assistant", content: data.reply, time: new Date().toISOString(), image: data.generatedImage || null },
+      ]);
+      markSeen(updatedMsg.id);
+      setLoading(false);
+      setTalking(false);
+      setShowQuickReplies(true);
+      speak(data.speechText || data.reply);
+      return;
+    }
+
+    const userMsg = { id: nextId(), role: "user", content: input, time: new Date().toISOString(), status: "sent" };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
     setInput("");
     setLoading(true);
     setTalking(true);
     setShowQuickReplies(false);
+    markDelivered(userMsg.id);
 
-    const settings = loadSettings();
-
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: userMsg.content,
-        history: messages,
-        visitorName,
-        sessionId: getSessionId(),
-        settings,
-      }),
-    });
-    const data = await res.json();
+    const data = await fetchReply(userMsg.content, messages);
 
     setMessages((prev) => [
       ...prev,
-      { id: nextId(), role: "assistant", content: data.reply, image: data.generatedImage || null },
+      { id: nextId(), role: "assistant", content: data.reply, time: new Date().toISOString(), image: data.generatedImage || null },
     ]);
+    markSeen(userMsg.id);
     setLoading(false);
     setTalking(false);
     setShowQuickReplies(true);
@@ -192,25 +269,19 @@ export default function ChatPage() {
 
   async function sendQuickReply(text) {
     setShowQuickReplies(false);
-    const userMsg = { id: nextId(), role: "user", content: text };
+    const userMsg = { id: nextId(), role: "user", content: text, time: new Date().toISOString(), status: "sent" };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
     setLoading(true);
     setTalking(true);
+    markDelivered(userMsg.id);
 
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: text,
-        history: messages,
-        visitorName,
-        sessionId: getSessionId(),
-        settings: loadSettings(),
-      }),
-    });
-    const data = await res.json();
-    setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: data.reply, image: data.generatedImage || null }]);
+    const data = await fetchReply(text, messages);
+    setMessages((prev) => [
+      ...prev,
+      { id: nextId(), role: "assistant", content: data.reply, time: new Date().toISOString(), image: data.generatedImage || null },
+    ]);
+    markSeen(userMsg.id);
     setLoading(false);
     setTalking(false);
     setShowQuickReplies(true);
@@ -247,10 +318,18 @@ export default function ChatPage() {
     if (!file) return;
 
     const { base64, mimeType } = await compressImage(file);
-    const userMsg = { id: nextId(), role: "user", content: `[Sent an image: ${file.name}]`, previewImage: URL.createObjectURL(file) };
+    const userMsg = {
+      id: nextId(),
+      role: "user",
+      content: `[Sent an image: ${file.name}]`,
+      previewImage: URL.createObjectURL(file),
+      time: new Date().toISOString(),
+      status: "sent",
+    };
     setMessages((prev) => [...prev, userMsg]);
     setLoading(true);
     setTalking(true);
+    markDelivered(userMsg.id);
 
     try {
       const res = await fetch("/api/chat", {
@@ -268,15 +347,27 @@ export default function ChatPage() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: errData.reply || "Sorry, that took too long — please try a smaller or clearer photo." }]);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: nextId(),
+            role: "assistant",
+            content: errData.reply || "Sorry, that took too long — please try a smaller or clearer photo.",
+            time: new Date().toISOString(),
+          },
+        ]);
         return;
       }
 
       const data = await res.json();
-      setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: data.reply }]);
+      setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: data.reply, time: new Date().toISOString() }]);
+      markSeen(userMsg.id);
       speak(data.speechText || data.reply);
     } catch (err) {
-      setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "Sorry, something went wrong reading that image. Please try again." }]);
+      setMessages((prev) => [
+        ...prev,
+        { id: nextId(), role: "assistant", content: "Sorry, something went wrong reading that image. Please try again.", time: new Date().toISOString() },
+      ]);
     } finally {
       setLoading(false);
       setTalking(false);
@@ -364,7 +455,7 @@ export default function ChatPage() {
     const lines = [`Chat with Robert — exported ${new Date().toLocaleString()}`, ""];
     messages.forEach((m) => {
       const sender = m.role === "user" ? visitorName || "You" : "Robert";
-      if (m.content) lines.push(`${sender}: ${m.content}`, "");
+      if (m.content) lines.push(`${sender} (${formatTime(m.time)}): ${m.content}`, "");
     });
     const blob = new Blob([lines.join("\n")], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
@@ -377,10 +468,70 @@ export default function ChatPage() {
     URL.revokeObjectURL(url);
   }
 
+  function startEdit(id, content) {
+    setEditingId(id);
+    setInput(content);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setInput("");
+  }
+
+  function deleteMessage(id) {
+    if (!confirm("Delete this message?")) return;
+    setMessages((prev) => prev.filter((m) => m.id !== id));
+    setPins((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      localStorage.setItem("robert_pins", JSON.stringify(next));
+      return next;
+    });
+    setReactions((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      localStorage.setItem("robert_reactions", JSON.stringify(next));
+      return next;
+    });
+    if (editingId === id) cancelEdit();
+  }
+
+  async function regenerate(assistantId) {
+    const idx = messages.findIndex((m) => m.id === assistantId);
+    if (idx === -1) return;
+    let userIdx = idx - 1;
+    while (userIdx >= 0 && messages[userIdx].role !== "user") userIdx--;
+    if (userIdx < 0) return;
+
+    const userMessage = messages[userIdx];
+    const historyBefore = messages.slice(0, userIdx);
+
+    setRegeneratingId(assistantId);
+    setLoading(true);
+    setTalking(true);
+
+    const data = await fetchReply(userMessage.content, historyBefore);
+
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === assistantId
+          ? { ...m, content: data.reply, time: new Date().toISOString(), image: data.generatedImage || null, regenerated: true }
+          : m
+      )
+    );
+    setRegeneratingId(null);
+    setLoading(false);
+    setTalking(false);
+    speak(data.speechText || data.reply);
+  }
+
   const pinnedList = Object.entries(pins);
   const visibleMessages = searchQuery.trim()
     ? messages.filter((m) => m.content?.toLowerCase().includes(searchQuery.trim().toLowerCase()))
     : messages;
+  const groupedMessages = groupWithDateSeparators(visibleMessages);
 
   if (!visitorName) {
     return (
@@ -461,57 +612,96 @@ export default function ChatPage() {
 
       <div style={styles.chatArea}>
         <div style={styles.messages}>
-          {visibleMessages.map((m) => (
-            <div
-              key={m.id}
-              style={{
-                ...styles.bubble,
-                fontSize: chatFontSize,
-                alignSelf: m.role === "user" ? "flex-end" : "flex-start",
-                background: m.role === "user" ? appearance.accent : bubbleAssistantBg,
-                color: m.role === "user" ? "#fff" : bubbleAssistantColor,
-              }}
-            >
-              {m.role === "user" && m.previewImage && (
-                <img src={m.previewImage} alt="Uploaded" style={{ maxWidth: "100%", borderRadius: 8, marginBottom: 4 }} />
-              )}
-              {m.role === "assistant" ? (
-                <div className="md-content">
-                  <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
-                    {m.content}
-                  </ReactMarkdown>
+          {groupedMessages.map((item) => {
+            if (item.type === "separator") {
+              return (
+                <div key={item.id} style={styles.dateSeparator}>
+                  <span style={styles.dateSeparatorPill}>{item.label}</span>
                 </div>
-              ) : (
-                m.content
-              )}
-              {m.image && <img src={m.image} alt="Generated" style={{ maxWidth: "100%", borderRadius: 8, marginTop: 6 }} />}
+              );
+            }
 
-              <div style={styles.msgActions}>
-                {m.content && (
-                  <>
-                    <button type="button" style={styles.msgActionBtn} onClick={() => copyText(m.content)}>📋</button>
-                    <button type="button" style={styles.msgActionBtn} onClick={() => togglePin(m.id, m.content)}>
-                      {pins[m.id] ? "📌✓" : "📌"}
-                    </button>
-                    <button type="button" style={styles.msgActionBtn} onClick={() => setPickerFor(pickerFor === m.id ? null : m.id)}>
-                      {reactions[m.id] || "😊"}
-                    </button>
-                  </>
+            const m = item.data;
+            const isRegenerating = regeneratingId === m.id;
+
+            return (
+              <div
+                key={m.id}
+                style={{
+                  ...styles.bubble,
+                  fontSize: chatFontSize,
+                  alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                  background: m.role === "user" ? appearance.accent : bubbleAssistantBg,
+                  color: m.role === "user" ? "#fff" : bubbleAssistantColor,
+                  opacity: isRegenerating ? 0.5 : 1,
+                }}
+              >
+                {m.role === "user" && m.previewImage && (
+                  <img src={m.previewImage} alt="Uploaded" style={{ maxWidth: "100%", borderRadius: 8, marginBottom: 4 }} />
+                )}
+                {m.role === "assistant" ? (
+                  <div className="md-content">
+                    <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                      {m.content}
+                    </ReactMarkdown>
+                  </div>
+                ) : (
+                  m.content
+                )}
+                {m.image && <img src={m.image} alt="Generated" style={{ maxWidth: "100%", borderRadius: 8, marginTop: 6 }} />}
+
+                <div style={{ ...styles.metaRow, justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+                  {m.edited && <span style={styles.editedTag}>edited</span>}
+                  {m.regenerated && <span style={styles.editedTag}>regenerated</span>}
+                  <span style={styles.timeText}>{formatTime(m.time)}</span>
+                  {m.role === "user" && (
+                    <span style={styles.ticks}>
+                      {m.status === "seen" ? "✓✓" : m.status === "delivered" ? "✓✓" : "✓"}
+                    </span>
+                  )}
+                </div>
+
+                <div style={styles.msgActions}>
+                  {m.content && (
+                    <>
+                      <button type="button" style={styles.msgActionBtn} onClick={() => copyText(m.content)}>📋</button>
+                      <button type="button" style={styles.msgActionBtn} onClick={() => togglePin(m.id, m.content)}>
+                        {pins[m.id] ? "📌✓" : "📌"}
+                      </button>
+                      <button type="button" style={styles.msgActionBtn} onClick={() => setPickerFor(pickerFor === m.id ? null : m.id)}>
+                        {reactions[m.id] || "😊"}
+                      </button>
+                      {m.role === "user" && (
+                        <button type="button" style={styles.msgActionBtn} onClick={() => startEdit(m.id, m.content)}>✏️</button>
+                      )}
+                      {m.role === "assistant" && (
+                        <button type="button" style={styles.msgActionBtn} onClick={() => regenerate(m.id)} disabled={isRegenerating}>🔁</button>
+                      )}
+                      <button type="button" style={styles.msgActionBtn} onClick={() => deleteMessage(m.id)}>🗑️</button>
+                    </>
+                  )}
+                </div>
+
+                {pickerFor === m.id && (
+                  <div style={styles.reactionPicker}>
+                    {REACTION_EMOJIS.map((emoji) => (
+                      <button key={emoji} type="button" style={styles.reactionBtn} onClick={() => setReaction(m.id, emoji)}>
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
                 )}
               </div>
+            );
+          })}
 
-              {pickerFor === m.id && (
-                <div style={styles.reactionPicker}>
-                  {REACTION_EMOJIS.map((emoji) => (
-                    <button key={emoji} type="button" style={styles.reactionBtn} onClick={() => setReaction(m.id, emoji)}>
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
-              )}
+          {loading && (
+            <div style={{ ...styles.bubble, ...styles.typingBubble, background: bubbleAssistantBg }}>
+              <span style={styles.typingDot} />
+              <span style={{ ...styles.typingDot, animationDelay: "0.15s" }} />
+              <span style={{ ...styles.typingDot, animationDelay: "0.3s" }} />
             </div>
-          ))}
-          {loading && <div style={{ ...styles.bubble, background: bubbleAssistantBg, color: bubbleAssistantColor }}>Robert is thinking...</div>}
+          )}
 
           {showQuickReplies && !loading && (
             <div style={styles.quickReplies}>
@@ -524,6 +714,13 @@ export default function ChatPage() {
           )}
           <div ref={bottomRef} />
         </div>
+
+        {editingId && (
+          <div style={styles.editingBanner}>
+            <span>Editing message</span>
+            <button type="button" onClick={cancelEdit} style={styles.editingCancelBtn}>Cancel</button>
+          </div>
+        )}
 
         <form onSubmit={sendMessage} style={styles.inputRow}>
           <input type="file" id="docUpload" accept=".pdf,.txt" style={{ display: "none" }} onChange={handleDocUpload} />
@@ -539,7 +736,9 @@ export default function ChatPage() {
             🎤
           </button>
           <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Type a message... (try 'walk')" style={styles.input} />
-          <button type="submit" style={{ ...styles.button, background: appearance.accent }} disabled={loading}>Send</button>
+          <button type="submit" style={{ ...styles.button, background: appearance.accent }} disabled={loading}>
+            {editingId ? "Save" : "Send"}
+          </button>
         </form>
       </div>
 
@@ -563,6 +762,7 @@ export default function ChatPage() {
         @keyframes stepLeft { 0%, 100% { transform: rotate(-18deg); } 50% { transform: rotate(18deg); } }
         @keyframes stepRight { 0%, 100% { transform: rotate(18deg); } 50% { transform: rotate(-18deg); } }
         @keyframes shift { 0% { transform: translateX(0); } 50% { transform: translateX(20px); } 100% { transform: translateX(0); } }
+        @keyframes typingBounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
         .md-content p { margin: 0 0 8px; }
         .md-content p:last-child { margin-bottom: 0; }
         .md-content h2 { font-size: 15px; margin: 10px 0 6px; }
@@ -590,12 +790,22 @@ const styles = {
   chatArea: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },
   messages: { flex: 1, display: "flex", flexDirection: "column", gap: 6, padding: "8px", overflowY: "auto" },
   bubble: { maxWidth: "80%", padding: "6px 10px", borderRadius: 10, lineHeight: 1.35, position: "relative" },
+  metaRow: { display: "flex", alignItems: "center", gap: 4, marginTop: 2, opacity: 0.7 },
+  timeText: { fontSize: 10 },
+  ticks: { fontSize: 10 },
+  editedTag: { fontSize: 10, fontStyle: "italic" },
+  dateSeparator: { display: "flex", justifyContent: "center", margin: "10px 0" },
+  dateSeparatorPill: { fontSize: 11, fontWeight: 600, color: "#8696a0", background: "rgba(134,150,160,0.15)", padding: "3px 10px", borderRadius: 10 },
   msgActions: { display: "flex", gap: 6, marginTop: 4 },
   msgActionBtn: { background: "none", border: "none", cursor: "pointer", fontSize: 12, opacity: 0.75, padding: 0 },
   reactionPicker: { display: "flex", gap: 4, background: "#fff", border: "1px solid #d8dee9", borderRadius: 16, padding: "4px 8px", marginTop: 4, boxShadow: "0 2px 8px rgba(0,0,0,0.2)" },
   reactionBtn: { background: "none", border: "none", fontSize: 16, cursor: "pointer" },
   quickReplies: { display: "flex", flexWrap: "wrap", gap: 6, alignSelf: "flex-start", maxWidth: "88%" },
   quickReplyBtn: { background: "rgba(0,0,0,0.06)", border: "1px solid #d8dee9", color: "#00a884", fontSize: 12, fontWeight: 500, padding: "6px 12px", borderRadius: 14, cursor: "pointer" },
+  typingBubble: { display: "flex", gap: 4, alignItems: "center", alignSelf: "flex-start", padding: "10px 14px" },
+  typingDot: { width: 6, height: 6, borderRadius: "50%", background: "#8696a0", display: "inline-block", animation: "typingBounce 1s infinite" },
+  editingBanner: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 12px", background: "rgba(94,129,172,0.15)", fontSize: 12 },
+  editingCancelBtn: { background: "none", border: "none", color: "#5e81ac", fontWeight: 600, cursor: "pointer", fontSize: 12 },
   inputRow: { display: "flex", gap: 6, padding: "6px", borderTop: "1px solid #d8dee9" },
   input: { flex: 1, padding: "8px 10px", borderRadius: 8, border: "1px solid #d8dee9" },
   button: { padding: "8px 14px", borderRadius: 8, border: "none", color: "#fff", fontWeight: 600, cursor: "pointer" },
