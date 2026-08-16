@@ -1,3 +1,5 @@
+import { extractText, getDocumentProxy } from "unpdf";
+
 export async function POST(req) {
   const { data, mimeType } = await req.json();
   if (!data || !mimeType) {
@@ -8,9 +10,9 @@ export async function POST(req) {
 
   try {
     if (mimeType === "application/pdf") {
-      const { default: pdfParse } = await import("pdf-parse/lib/pdf-parse.js");
-      const parsed = await pdfParse(buffer);
-      return Response.json({ text: parsed.text.slice(0, 12000) });
+      const pdf = await getDocumentProxy(new Uint8Array(buffer));
+      const { text } = await extractText(pdf, { mergePages: true });
+      return Response.json({ text: text.slice(0, 12000) });
     }
     if (mimeType.startsWith("text/")) {
       return Response.json({ text: buffer.toString("utf8").slice(0, 12000) });
@@ -20,4 +22,4 @@ export async function POST(req) {
     console.log("Document extraction failed:", err.message);
     return Response.json({ error: "Could not read that file." }, { status: 500 });
   }
-}
+  }
