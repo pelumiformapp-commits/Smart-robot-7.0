@@ -42,6 +42,10 @@ function loadAppearance() {
   };
 }
 
+const FONT_SIZES = [13, 14, 15, 16, 18];
+const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
+const QUICK_REPLIES = ["Explain more", "Show an example", "Simplify this"];
+
 export default function ChatPage() {
   const [visitorName, setVisitorName] = useState(null);
   const [nameInput, setNameInput] = useState("");
@@ -52,18 +56,35 @@ export default function ChatPage() {
   const [walking, setWalking] = useState(false);
   const [listening, setListening] = useState(false);
   const [appearance, setAppearance] = useState({ theme: "dark", accent: "#5e81ac" });
+  const [fontIndex, setFontIndex] = useState(1);
+  const [autoTalk, setAutoTalk] = useState(true);
+  const [pins, setPins] = useState({});
+  const [reactions, setReactions] = useState({});
+  const [pickerFor, setPickerFor] = useState(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showQuickReplies, setShowQuickReplies] = useState(false);
   const bottomRef = useRef(null);
-  const recognitionRef = useRef(null);
 
   useEffect(() => {
     const saved = localStorage.getItem("robert_visitor_name");
     if (saved) setVisitorName(saved);
     setAppearance(loadAppearance());
+
+    const savedFont = parseInt(localStorage.getItem("robert_font_index"), 10);
+    if (!isNaN(savedFont) && savedFont >= 0 && savedFont < FONT_SIZES.length) setFontIndex(savedFont);
+
+    setAutoTalk(localStorage.getItem("robert_autotalk") !== "false");
+
+    try {
+      setPins(JSON.parse(localStorage.getItem("robert_pins") || "{}"));
+      setReactions(JSON.parse(localStorage.getItem("robert_reactions") || "{}"));
+    } catch (e) {}
   }, []);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    if (!searchOpen) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, searchOpen]);
 
   function saveName(e) {
     e.preventDefault();
@@ -75,7 +96,7 @@ export default function ChatPage() {
     if (!hideGreeting) {
       const template = localStorage.getItem("robert_welcome_message") || "Hi [Username]! I'm Robert. Ask me anything.";
       const greeting = template.replace(/\[Username\]/g, nameInput.trim());
-      setMessages([{ role: "assistant", content: greeting }]);
+      setMessages([{ id: "m0", role: "assistant", content: greeting }]);
     }
   }
 
@@ -93,7 +114,7 @@ export default function ChatPage() {
     });
   }
 
-  function compressImage(file, maxWidth = 1400, useJpeg = false, quality = 0.9) {
+  function compressImage(file, maxWidth = 1000, useJpeg = true, quality = 0.85) {
     return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
@@ -105,7 +126,6 @@ export default function ChatPage() {
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = "high";
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
         const format = useJpeg ? "image/jpeg" : "image/png";
         canvas.toBlob(
           (blob) => {
@@ -120,20 +140,30 @@ export default function ChatPage() {
       img.src = URL.createObjectURL(file);
     });
   }
+
+  function nextId() {
+    return "m" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
+  }
+
+  function speak(text) {
+    if (!autoTalk || !text || !("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  }
+
   async function sendMessage(e) {
     e.preventDefault();
     if (!input.trim()) return;
 
-    if (isWalkCommand(input)) {
-      triggerWalk();
-    }
+    if (isWalkCommand(input)) triggerWalk();
 
-    const userMsg = { role: "user", content: input };
+    const userMsg = { id: nextId(), role: "user", content: input };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
     setInput("");
     setLoading(true);
     setTalking(true);
+    setShowQuickReplies(false);
 
     const settings = loadSettings();
 
@@ -152,14 +182,39 @@ export default function ChatPage() {
 
     setMessages((prev) => [
       ...prev,
-      { role: "assistant", content: data.reply, image: data.generatedImage || null },
+      { id: nextId(), role: "assistant", content: data.reply, image: data.generatedImage || null },
     ]);
     setLoading(false);
     setTalking(false);
+    setShowQuickReplies(true);
+    speak(data.speechText || data.reply);
+  }
 
-    if (data.speechText && "speechSynthesis" in window) {
-      window.speechSynthesis.speak(new SpeechSynthesisUtterance(data.speechText));
-    }
+  async function sendQuickReply(text) {
+    setShowQuickReplies(false);
+    const userMsg = { id: nextId(), role: "user", content: text };
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
+    setLoading(true);
+    setTalking(true);
+
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: text,
+        history: messages,
+        visitorName,
+        sessionId: getSessionId(),
+        settings: loadSettings(),
+      }),
+    });
+    const data = await res.json();
+    setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: data.reply, image: data.generatedImage || null }]);
+    setLoading(false);
+    setTalking(false);
+    setShowQuickReplies(true);
+    speak(data.speechText || data.reply);
   }
 
   async function handleDocUpload(e) {
@@ -167,7 +222,7 @@ export default function ChatPage() {
     if (!file) return;
     setLoading(true);
     try {
-      const { base64, mimeType } = await compressImage(file);
+      const base64 = await fileToBase64(file);
       const res = await fetch("/api/extract-document", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -192,7 +247,7 @@ export default function ChatPage() {
     if (!file) return;
 
     const { base64, mimeType } = await compressImage(file);
-    const userMsg = { role: "user", content: `[Sent an image: ${file.name}]`, previewImage: URL.createObjectURL(file) };
+    const userMsg = { id: nextId(), role: "user", content: `[Sent an image: ${file.name}]`, previewImage: URL.createObjectURL(file) };
     setMessages((prev) => [...prev, userMsg]);
     setLoading(true);
     setTalking(true);
@@ -213,18 +268,15 @@ export default function ChatPage() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        setMessages((prev) => [...prev, { role: "assistant", content: errData.reply || "Sorry, that took too long — please try a smaller or clearer photo." }]);
+        setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: errData.reply || "Sorry, that took too long — please try a smaller or clearer photo." }]);
         return;
       }
 
       const data = await res.json();
-      setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
-
-      if (data.speechText && "speechSynthesis" in window) {
-        window.speechSynthesis.speak(new SpeechSynthesisUtterance(data.speechText));
-      }
+      setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: data.reply }]);
+      speak(data.speechText || data.reply);
     } catch (err) {
-      setMessages((prev) => [...prev, { role: "assistant", content: "Sorry, something went wrong reading that image. Please try again." }]);
+      setMessages((prev) => [...prev, { id: nextId(), role: "assistant", content: "Sorry, something went wrong reading that image. Please try again." }]);
     } finally {
       setLoading(false);
       setTalking(false);
@@ -232,25 +284,21 @@ export default function ChatPage() {
       e.target.value = "";
     }
   }
-  
+
   function toggleVoiceInput() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       alert("Voice input isn't supported on this browser.");
       return;
     }
-
     if (listening) {
-      recognitionRef.current?.stop();
+      window._robertRecognition?.stop();
       setListening(false);
       return;
     }
-
     const recognition = new SpeechRecognition();
     recognition.lang = "en-US";
     recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-
     recognition.onstart = () => setListening(true);
     recognition.onend = () => setListening(false);
     recognition.onerror = () => setListening(false);
@@ -258,9 +306,15 @@ export default function ChatPage() {
       const transcript = event.results[0][0].transcript;
       setInput((prev) => (prev ? `${prev} ${transcript}` : transcript));
     };
-
-    recognitionRef.current = recognition;
+    window._robertRecognition = recognition;
     recognition.start();
+  }
+
+  function toggleAutoTalk() {
+    const next = !autoTalk;
+    setAutoTalk(next);
+    localStorage.setItem("robert_autotalk", next.toString());
+    if (!next && "speechSynthesis" in window) window.speechSynthesis.cancel();
   }
 
   function clearChat() {
@@ -268,6 +322,65 @@ export default function ChatPage() {
       setMessages([]);
     }
   }
+
+  function changeFont(delta) {
+    const next = Math.max(0, Math.min(FONT_SIZES.length - 1, fontIndex + delta));
+    setFontIndex(next);
+    localStorage.setItem("robert_font_index", next.toString());
+  }
+
+  function toggleTheme() {
+    const next = appearance.theme === "light" ? "dark" : "light";
+    setAppearance((prev) => ({ ...prev, theme: next }));
+    localStorage.setItem("robert_theme", next);
+  }
+
+  function copyText(text) {
+    navigator.clipboard?.writeText(text).catch(() => {});
+  }
+
+  function togglePin(id, text) {
+    setPins((prev) => {
+      const next = { ...prev };
+      if (next[id]) delete next[id];
+      else next[id] = text.length > 60 ? text.slice(0, 60) + "…" : text;
+      localStorage.setItem("robert_pins", JSON.stringify(next));
+      return next;
+    });
+  }
+
+  function setReaction(id, emoji) {
+    setReactions((prev) => {
+      const next = { ...prev };
+      if (next[id] === emoji) delete next[id];
+      else next[id] = emoji;
+      localStorage.setItem("robert_reactions", JSON.stringify(next));
+      return next;
+    });
+    setPickerFor(null);
+  }
+
+  function exportChat() {
+    const lines = [`Chat with Robert — exported ${new Date().toLocaleString()}`, ""];
+    messages.forEach((m) => {
+      const sender = m.role === "user" ? visitorName || "You" : "Robert";
+      if (m.content) lines.push(`${sender}: ${m.content}`, "");
+    });
+    const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `robert-chat-${Date.now()}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  const pinnedList = Object.entries(pins);
+  const visibleMessages = searchQuery.trim()
+    ? messages.filter((m) => m.content?.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+    : messages;
 
   if (!visitorName) {
     return (
@@ -285,12 +398,13 @@ export default function ChatPage() {
   const pageBg = isDark ? "#0b141a" : "#eceff4";
   const bubbleAssistantBg = isDark ? "#202c33" : "#e5e9f0";
   const bubbleAssistantColor = isDark ? "#e9edef" : "#2e3440";
+  const chatFontSize = FONT_SIZES[fontIndex];
 
   return (
     <div style={{ ...styles.page, background: pageBg }}>
       <div style={{ ...styles.sidebar, background: isDark ? "#202c33" : "#3b4252" }}>
         <div className={`robot ${talking ? "talking" : "idle"} ${walking ? "walking" : ""}`}>
-          <svg viewBox="0 0 160 220" width="90" height="120">
+          <svg viewBox="0 0 160 220" width="70" height="95">
             <rect x="58" y="170" width="14" height="40" rx="4" fill="#3b4252" className="leg-left" />
             <rect x="88" y="170" width="14" height="40" rx="4" fill="#3b4252" className="leg-right" />
             <rect x="40" y="90" width="80" height="85" rx="14" fill="#4c566a" />
@@ -308,18 +422,51 @@ export default function ChatPage() {
             <circle cx="80" cy="2" r="4" fill="#a3be8c" className="antenna-light" />
           </svg>
         </div>
-        <span style={{ fontSize: 13, color: "#eceff4" }}>Hi, {visitorName}</span>
-        <button type="button" onClick={clearChat} title="Clear chat" style={styles.headerIconBtn}>🗑️</button>
-        <a href="/settings" style={styles.settingsLink}>⚙️</a>
+        <span style={{ fontSize: 12, color: "#eceff4" }}>Hi, {visitorName}</span>
+        <div style={styles.headerBtnRow}>
+          <button type="button" onClick={() => changeFont(-1)} title="Smaller text" style={styles.headerIconBtn}>A−</button>
+          <button type="button" onClick={() => changeFont(1)} title="Larger text" style={styles.headerIconBtn}>A+</button>
+          <button type="button" onClick={toggleTheme} title="Toggle theme" style={styles.headerIconBtn}>{isDark ? "🌙" : "☀️"}</button>
+          <button type="button" onClick={toggleAutoTalk} title="Auto-talk" style={{ ...styles.headerIconBtn, background: autoTalk ? appearance.accent : "transparent" }}>🔈</button>
+          <button type="button" onClick={() => setSearchOpen((v) => !v)} title="Search" style={styles.headerIconBtn}>🔍</button>
+          <button type="button" onClick={exportChat} title="Export chat" style={styles.headerIconBtn}>⬇️</button>
+          <button type="button" onClick={clearChat} title="Clear chat" style={styles.headerIconBtn}>🗑️</button>
+          <a href="/settings" style={styles.settingsLink}>⚙️</a>
+        </div>
       </div>
+
+      {searchOpen && (
+        <div style={{ ...styles.searchBar, background: isDark ? "#202c33" : "#fff" }}>
+          <input
+            autoFocus
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search messages..."
+            style={{ ...styles.input, flex: 1 }}
+          />
+          <button type="button" onClick={() => { setSearchOpen(false); setSearchQuery(""); }} style={styles.headerIconBtn}>✕</button>
+        </div>
+      )}
+
+      {pinnedList.length > 0 && (
+        <div style={{ ...styles.pinnedBar, background: isDark ? "#202c33" : "#fff" }}>
+          {pinnedList.map(([id, text]) => (
+            <div key={id} style={styles.pinnedItem}>
+              <span style={{ flex: 1, fontSize: 12, color: bubbleAssistantColor }}>📌 {text}</span>
+              <button type="button" onClick={() => togglePin(id, "")} style={styles.pinnedUnpin}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div style={styles.chatArea}>
         <div style={styles.messages}>
-          {messages.map((m, i) => (
+          {visibleMessages.map((m) => (
             <div
-              key={i}
+              key={m.id}
               style={{
                 ...styles.bubble,
+                fontSize: chatFontSize,
                 alignSelf: m.role === "user" ? "flex-end" : "flex-start",
                 background: m.role === "user" ? appearance.accent : bubbleAssistantBg,
                 color: m.role === "user" ? "#fff" : bubbleAssistantColor,
@@ -338,9 +485,43 @@ export default function ChatPage() {
                 m.content
               )}
               {m.image && <img src={m.image} alt="Generated" style={{ maxWidth: "100%", borderRadius: 8, marginTop: 6 }} />}
+
+              <div style={styles.msgActions}>
+                {m.content && (
+                  <>
+                    <button type="button" style={styles.msgActionBtn} onClick={() => copyText(m.content)}>📋</button>
+                    <button type="button" style={styles.msgActionBtn} onClick={() => togglePin(m.id, m.content)}>
+                      {pins[m.id] ? "📌✓" : "📌"}
+                    </button>
+                    <button type="button" style={styles.msgActionBtn} onClick={() => setPickerFor(pickerFor === m.id ? null : m.id)}>
+                      {reactions[m.id] || "😊"}
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {pickerFor === m.id && (
+                <div style={styles.reactionPicker}>
+                  {REACTION_EMOJIS.map((emoji) => (
+                    <button key={emoji} type="button" style={styles.reactionBtn} onClick={() => setReaction(m.id, emoji)}>
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
-          {loading && <div style={{ ...styles.bubble, background: bubbleAssistantBg, color: bubbleAssistantColor }}>Robert is typing...</div>}
+          {loading && <div style={{ ...styles.bubble, background: bubbleAssistantBg, color: bubbleAssistantColor }}>Robert is thinking...</div>}
+
+          {showQuickReplies && !loading && (
+            <div style={styles.quickReplies}>
+              {QUICK_REPLIES.map((label) => (
+                <button key={label} type="button" style={styles.quickReplyBtn} onClick={() => sendQuickReply(label)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           <div ref={bottomRef} />
         </div>
 
@@ -365,33 +546,23 @@ export default function ChatPage() {
       <style jsx global>{`
         .arm-left, .arm-right { transform-origin: top center; }
         .leg-left, .leg-right { transform-origin: top center; }
-
         .idle .arm-left { animation: sway 3s ease-in-out infinite; }
         .idle .arm-right { animation: sway 3s ease-in-out infinite reverse; }
-
         .talking { animation: bob 0.5s ease-in-out infinite; }
         .talking .mouth { animation: flicker 0.35s steps(2) infinite; }
         .talking .antenna-light { animation: glow 0.6s ease-in-out infinite; }
-
         .walking { animation: shift 2.2s ease-in-out; }
         .walking .leg-left { animation: stepLeft 0.4s ease-in-out infinite; }
         .walking .leg-right { animation: stepRight 0.4s ease-in-out infinite; }
         .walking .arm-left { animation: stepRight 0.4s ease-in-out infinite; }
         .walking .arm-right { animation: stepLeft 0.4s ease-in-out infinite; }
-
         @keyframes sway { 0%, 100% { transform: rotate(0deg); } 50% { transform: rotate(4deg); } }
         @keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
         @keyframes flicker { 0%, 100% { width: 40px; } 50% { width: 20px; } }
         @keyframes glow { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-
         @keyframes stepLeft { 0%, 100% { transform: rotate(-18deg); } 50% { transform: rotate(18deg); } }
         @keyframes stepRight { 0%, 100% { transform: rotate(18deg); } 50% { transform: rotate(-18deg); } }
-        @keyframes shift {
-          0% { transform: translateX(0); }
-          50% { transform: translateX(20px); }
-          100% { transform: translateX(0); }
-        }
-
+        @keyframes shift { 0% { transform: translateX(0); } 50% { transform: translateX(20px); } 100% { transform: translateX(0); } }
         .md-content p { margin: 0 0 8px; }
         .md-content p:last-child { margin-bottom: 0; }
         .md-content h2 { font-size: 15px; margin: 10px 0 6px; }
@@ -408,12 +579,23 @@ export default function ChatPage() {
 const styles = {
   center: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", gap: 12, background: "#eceff4" },
   page: { display: "flex", flexDirection: "column", height: "100vh" },
-  sidebar: { color: "#eceff4", display: "flex", alignItems: "center", gap: 8, padding: "6px 10px" },
-  headerIconBtn: { marginLeft: "auto", background: "none", border: "none", color: "#eceff4", fontSize: 16, cursor: "pointer" },
-  settingsLink: { color: "#eceff4", textDecoration: "none", fontSize: 18 },
+  sidebar: { color: "#eceff4", display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", flexWrap: "wrap" },
+  headerBtnRow: { marginLeft: "auto", display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" },
+  headerIconBtn: { background: "rgba(255,255,255,0.1)", border: "none", color: "#eceff4", fontSize: 12, borderRadius: 6, padding: "4px 6px", cursor: "pointer" },
+  settingsLink: { color: "#eceff4", textDecoration: "none", fontSize: 16 },
+  searchBar: { display: "flex", gap: 6, padding: "6px 10px", borderBottom: "1px solid #d8dee9" },
+  pinnedBar: { display: "flex", flexDirection: "column", gap: 4, padding: "6px 10px", borderBottom: "1px solid #d8dee9", maxHeight: 100, overflowY: "auto" },
+  pinnedItem: { display: "flex", alignItems: "center", gap: 6, background: "rgba(0,0,0,0.05)", borderRadius: 8, padding: "4px 8px" },
+  pinnedUnpin: { background: "none", border: "none", color: "#8696a0", cursor: "pointer", fontSize: 12 },
   chatArea: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },
   messages: { flex: 1, display: "flex", flexDirection: "column", gap: 6, padding: "8px", overflowY: "auto" },
-  bubble: { maxWidth: "80%", padding: "6px 10px", borderRadius: 10, fontSize: 14, lineHeight: 1.35 },
+  bubble: { maxWidth: "80%", padding: "6px 10px", borderRadius: 10, lineHeight: 1.35, position: "relative" },
+  msgActions: { display: "flex", gap: 6, marginTop: 4 },
+  msgActionBtn: { background: "none", border: "none", cursor: "pointer", fontSize: 12, opacity: 0.75, padding: 0 },
+  reactionPicker: { display: "flex", gap: 4, background: "#fff", border: "1px solid #d8dee9", borderRadius: 16, padding: "4px 8px", marginTop: 4, boxShadow: "0 2px 8px rgba(0,0,0,0.2)" },
+  reactionBtn: { background: "none", border: "none", fontSize: 16, cursor: "pointer" },
+  quickReplies: { display: "flex", flexWrap: "wrap", gap: 6, alignSelf: "flex-start", maxWidth: "88%" },
+  quickReplyBtn: { background: "rgba(0,0,0,0.06)", border: "1px solid #d8dee9", color: "#00a884", fontSize: 12, fontWeight: 500, padding: "6px 12px", borderRadius: 14, cursor: "pointer" },
   inputRow: { display: "flex", gap: 6, padding: "6px", borderTop: "1px solid #d8dee9" },
   input: { flex: 1, padding: "8px 10px", borderRadius: 8, border: "1px solid #d8dee9" },
   button: { padding: "8px 14px", borderRadius: 8, border: "none", color: "#fff", fontWeight: 600, cursor: "pointer" },
