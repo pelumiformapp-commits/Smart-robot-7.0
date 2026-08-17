@@ -37,6 +37,15 @@ async function updateVisitorProfile(sql, visitorName, latestMessage) {
   if (!visitorKey || visitorKey === "guest") return "";
 
   try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS user_profiles (
+        visitor_key   TEXT PRIMARY KEY,
+        display_name  TEXT NOT NULL,
+        facts         TEXT DEFAULT '',
+        last_active   TIMESTAMPTZ DEFAULT now()
+      )
+    `;
+
     const rows = await sql`SELECT facts FROM user_profiles WHERE visitor_key = ${visitorKey}`;
     const existingFacts = rows[0]?.facts || "";
     const newFacts = extractFacts(latestMessage || "");
