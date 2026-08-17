@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-}
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 function getSessionId() {
   let id = localStorage.getItem("robert_session_id");
@@ -191,7 +192,6 @@ export default function ChatPage() {
     }
   }, []);
 
-  // Load persisted chat history for this session once we know who's visiting
   useEffect(() => {
     if (!visitorName || historyLoaded) return;
     (async () => {
@@ -214,7 +214,6 @@ export default function ChatPage() {
     })();
   }, [visitorName, historyLoaded]);
 
-  // Persist chat history whenever messages change (after initial load)
   useEffect(() => {
     if (!visitorName || !historyLoaded) return;
     try {
@@ -233,8 +232,6 @@ export default function ChatPage() {
     refreshToolsData();
   }, [toolsOpen, visitorName]);
 
-  // "Last seen" — reflects the previous session, fetched once before this
-  // session's own activity updates it.
   useEffect(() => {
     if (!visitorName) return;
     (async () => {
@@ -455,9 +452,6 @@ export default function ChatPage() {
     });
   }
 
-  // Keeps resolution/quality as high as reasonably possible — important for
-  // reading small text and equations — only stepping down if the file is still
-  // too large after a few passes.
   async function compressImageToLimit(file, maxBytes = 1800000) {
     let maxWidth = 1400;
     let quality = 0.9;
@@ -650,7 +644,6 @@ export default function ChatPage() {
     }
   }
 
-  // Picking an image now opens a preview instead of sending immediately
   function handleImageSelect(e) {
     const file = e.target.files[0];
     if (!file) return;
