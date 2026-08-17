@@ -52,3 +52,10 @@ CREATE TABLE IF NOT EXISTS reminders (
 
 CREATE INDEX IF NOT EXISTS idx_reminders_session ON reminders(session_id, remind_at);
 CREATE INDEX IF NOT EXISTS idx_reminders_pending ON reminders(sent, remind_at) WHERE sent = FALSE;
+
+CREATE TABLE IF NOT EXISTS user_profiles (
+  visitor_key   TEXT PRIMARY KEY,
+  display_name  TEXT NOT NULL,
+  facts         TEXT DEFAULT '',
+  last_active   TIMESTAMPTZ DEFAULT now()
+);
