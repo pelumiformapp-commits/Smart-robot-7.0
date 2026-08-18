@@ -1,5 +1,5 @@
 {
-  "name": "robert",
+  "name": "smart-robot-7-0",
   "main": ".open-next/worker.js",
   "compatibility_date": "2026-08-18",
   "compatibility_flags": ["nodejs_compat"],
@@ -10,7 +10,7 @@
   "services": [
     {
       "binding": "WORKER_SELF_REFERENCE",
-      "service": "robert"
+      "service": "smart-robot-7-0"
     }
   ]
 }
