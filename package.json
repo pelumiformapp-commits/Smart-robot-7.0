@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:cloudflare": "opennextjs-cloudflare build",
     "start": "next start"
   },
   "dependencies": {
@@ -22,5 +23,9 @@
     "katex": "^0.16.11",
     "unpdf": "^0.12.1",
     "mathjs": "^13.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.124.0",
+    "opennextjs-cloudflare": "latest"
   }
 }
