@@ -1,0 +1,10 @@
+{
+  "name": "robert",
+  "compatibility_date": "2026-08-18",
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "robert"
+    }
+  ]
+}

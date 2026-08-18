@@ -1,6 +1,0 @@
-"services": [
-  {
-    "binding": "WORKER_SELF_REFERENCE",
-    "service": "smart-robot-7-0"
-  }
-]
