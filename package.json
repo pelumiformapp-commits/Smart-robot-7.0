@@ -12,12 +12,15 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "pg": "^8.12.0",
+    "@neondatabase/serverless": "^0.10.4",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
     "react-syntax-highlighter": "^15.5.0",
     "react-markdown": "^9.0.1",
     "remark-math": "^6.0.0",
     "rehype-katex": "^7.0.1",
-    "katex": "^0.16.11"
+    "katex": "^0.16.11",
+    "unpdf": "^0.12.1",
+    "mathjs": "^13.0.0"
   }
 }
